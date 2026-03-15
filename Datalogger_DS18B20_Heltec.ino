@@ -37,12 +37,14 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 /* ---------------------------------- Bibliotecas --------------------------- */
 
 #include <ArduinoOTA.h>
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <Wire.h>
 #include "HT_SSD1306Wire.h"
-#include <EEPROM.h>
+#include <Preferences.h>  //utilizada no lugar da EEPROM
+
 
 /* ========================================================================== */
 
@@ -51,6 +53,10 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 
 #define led LED_BUILTIN  //GPIO ?
 #define ds18b20 GPIO 45  //pino 6 lado esquerdo
+// Configurações de Tempo (15 minutos = 15 * 60 * 10^6 microssegundos)
+#define uS_TO_S_FACTOR 1000000ULL
+#define TIME_TO_SLEEP 900  //900 = 15min
+Preferences p;
 
 /* ========================================================================== */
 
@@ -66,11 +72,11 @@ static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RS
 /* ========================================================================== */
 /* -------------------------- Macros e Constantes --------------------------- */
 
-#define EEPROM_SIZE 64
-#define EEPROM_SSID_OFFSET 0
-#define EEPROM_PASSWORD_OFFSET 32
-char ssid[32] = "";
-char password[32] = "";
+//#define EEPROM_SIZE 64
+//#define EEPROM_SSID_OFFSET 0
+//#define EEPROM_PASSWORD_OFFSET 32
+String ssid = "";
+String password = "";
 
 //para conexão com banco de dados
 const char http_site[] = "http://10.0.0.11/php/gravabanco.php";
@@ -134,6 +140,8 @@ int enviaDados() {
 
 void handleRoot() {
   // Exibindo a página inicial
+  display.drawString(0, 40, "server");
+  display.display();
   String html = "<html><body>";
   html += "<h1>Configuracao do Wi-Fi</h1>";
   html += "<p>Por favor, configure as informacoes de Wi-Fi.</p>";
@@ -151,8 +159,13 @@ void handleConfig() {
   String ssid = server.arg("ssid");
   String password = server.arg("password");
 
+  p.begin("wifi-config", false);
+  p.putString("ssid", ssid);
+  p.putString("password", password);
+
+  p.end();
   // Salvar as informações na memória EEPROM ou SPIFFS
-  strncpy(::ssid, ssid.c_str(), sizeof(::ssid) - 1);
+  /*strncpy(::ssid, ssid.c_str(), sizeof(::ssid) - 1);
   strncpy(::password, password.c_str(), sizeof(::password) - 1);
 
 
@@ -160,8 +173,8 @@ void handleConfig() {
   EEPROM.put(EEPROM_PASSWORD_OFFSET, ::password);
 
   EEPROM.commit();
-
-  delay(2000);
+  */
+  delay(200);
 
   // Reiniciando o dispositivo para se conectar à rede Wi-Fi
   ESP.restart();
@@ -178,14 +191,23 @@ void accessPoint() {
 }  //end acessPoint
 
 
-
+/* ========================================================================= */
+/* --------------------------------- Setup --------------------------------- */
 void setup() {
 
   char htn[30];
   sprintf(htn, "DatLog %S %d", DispositivoName, dispositivo);
   // Open serial communications and wait for port to open:
 
+  pinMode(Vext, OUTPUT);
+  digitalWrite(Vext, LOW);
+
   Serial.begin(115200);
+  display.init();
+  display.clear();
+  display.display();
+
+
   //pinMode(led, OUTPUT);
   //
   //settimeofday_cb(ntpSync_cb);  //Definição de callback ntp
@@ -194,41 +216,23 @@ void setup() {
   //fuso horário , horário de verão , ntp server
   //configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
-  EEPROM.begin(EEPROM_SIZE);
+  //EEPROM.begin(EEPROM_SIZE);
+  p.begin("wifi-config", true);
+
   delay(10);
 
-  // read SSID from EEPROM
-  for (int i = 0; i < 32; i++) {
-    char c = EEPROM.read(EEPROM_SSID_OFFSET + i);
-    if (c == '\0') {
-      break;
-    }
-    ssid[i] = c;
-  }
+  ssid = p.getString("ssid", "");
+  password = p.getString("password", "");
 
-  // read password from EEPROM
-  for (int i = 0; i < 32; i++) {
-    char c = EEPROM.read(EEPROM_PASSWORD_OFFSET + i);
-    if (c == '\0') {
-      break;
-    }
-    password[i] = c;
-  }
-  // Conecta WiFi
-  //Serial.println("Conectando WiFi");
-  //Serial.println(String(ssid));
-  //Serial.println(String(password));
-  /* WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, pass);
-    while (WiFi.status() != WL_CONNECTED) {
-     digitalWrite(led, LOW);
-     delay(500);
-     //Serial.print(".");
-    }
+  p.end();
+  Serial.println(ssid);
+  Serial.println(password);
 
-  */
-  if (strlen(ssid) > 0 && strlen(password) > 0) {
+
+  if (ssid != "" && password != "") {
     // connect to WiFi using saved credentials
+    display.drawString(0, 10, "Conectando...");
+    display.display();
     int tempo = 0;
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
@@ -237,7 +241,10 @@ void setup() {
     while (WiFi.status() != WL_CONNECTED) {
       digitalWrite(led, LOW);
       delay(500);
-      //Serial.print(".");
+      int progress = (tempo) % 6;
+      display.drawProgressBar(0, 32, 12, 10, progress);
+      //display.display();
+      Serial.print(".");
       tempo++;
       if (tempo > 60) {
         WiFi.disconnect();
@@ -253,7 +260,10 @@ void setup() {
     //Serial.println(WiFi.localIP());
   } else {
     // start Access Point mode
+    display.drawString(0, 10, "Modo AP...");
+    display.display();
     accessPoint();
+    server.handleClient();
   }
   //digitalWrite(led, HIGH);
 
@@ -348,5 +358,19 @@ void setup() {
 }  //end setup
 
 void loop() {
-  // put your main code here, to run repeatedly:
+  if (WiFi.status() == WL_CONNECTED) {
+    //verificar para eliminar ou inibir
+    display.clear();
+    display.drawString(0, 10, "  Conectado");
+    display.display();
+    delay(1000);  //apagar isso
+
+  } else {
+    // Se não estiver conectado à rede Wi-Fi, lidando com as requisições do cliente
+    display.drawString(0,40,"Desconectado");
+    display.display();
+    //accessPoint();
+    server.handleClient();
+  }
+  delay(10);
 }
