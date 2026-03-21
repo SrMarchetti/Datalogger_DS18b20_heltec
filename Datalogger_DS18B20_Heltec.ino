@@ -36,17 +36,20 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 /* ========================================================================== */
 /* ---------------------------------- Bibliotecas --------------------------- */
 
+#ifndef GPIO_IS_VALID_GPIO
+#define GPIO_IS_VALID_GPIO(pin) ((pin) >= 0 && (pin) <= 48)
+#endif
 //#include <ArduinoOTA.h>
-#include <Arduino.h>
+#include <OneWire.h>  //sensor DS18B20
+//#include <Arduino.h>
 #include <WiFi.h>
-#include <HTTPUpdate.h>          //lib troca de OTA para atualizar o firmware via HTTP
+#include <HTTPUpdate.h>  //lib troca de OTA para atualizar o firmware via HTTP
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Wire.h>
 #include <HT_SSD1306Wire.h>
-#include <Preferences.h>        //utilizada no lugar da EEPROM
-//include <OneWire.h>            //sensor DS18B20
+#include <Preferences.h>  //utilizada no lugar da EEPROM
 
 
 /* ========================================================================== */
@@ -55,6 +58,7 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 /* --------------------------------Mapeamento Hardware----------------------- */
 
 #define led LED_BUILTIN  //GPIO ?
+#define oneWire_pin 2
 //#define ds18b20 GPIO 45  //pino 6 lado esquerdo
 // Configurações de Tempo (15 minutos = 15 * 60 * 10^6 microssegundos)
 #define uS_TO_S_FACTOR 1000000ULL
@@ -66,11 +70,11 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 /* ------------------------- Instanciando objetos --------------------------- */
 
 //WiFiClient client;             //para conecção com banco de dados
-WebServer server(80);            // Cria o objeto 'server' na porta 80
-static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED); 
-                                 // addr , freq , i2c group , resolution , rst
+WebServer server(80);  // Cria o objeto 'server' na porta 80
+static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED);
+// addr , freq , i2c group , resolution , rst
 Preferences p;
-//OneWire ds(2);                   // GPIO2 pino 13 da placa
+OneWire ds(oneWire_pin);  // GPIO2 pino 13 da placa
 
 /* ========================================================================== */
 
@@ -95,7 +99,7 @@ const int http_port = 8080;
 String ssid = "";
 String password = "";
 float temp;
-float offSetDHT = 0.0;    //offSet do sensor DHT21
+float offSetDHT = 0.0;  //offSet do sensor DHT21
 
 /* ========================================================================== */
 
@@ -129,7 +133,7 @@ int enviaDados() {
 
     if (httpCode == 200) {
       String response = http.getString();
-      StaticJsonDocument<200> doc;
+      JsonDocument doc;
       deserializeJson(doc, response);
 
       if (doc["update"] == true) {
@@ -150,7 +154,7 @@ void verificarAtualizacao(WiFiClient& client) {
   // Substitua pela URL do seu arquivo .bin
   t_httpUpdate_return ret = httpUpdate.update(client, servidorOTA);
 
-  switch(ret) {
+  switch (ret) {
     case HTTP_UPDATE_FAILED:
       Serial.printf("Erro no OTA: (%d): %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
       break;
@@ -216,35 +220,79 @@ void accessPoint() {
 }  //end acessPoint
 
 
-/*
-void leSensor(){
+
+void leSensor() {
   byte i;
   byte present = 0;
   byte type_s;
   byte data[9];
   byte addr[8];
-  p.begin("DS18B20", "false");      //inicializa preferences
-  
+  //p.begin("DS18B20", "false");  //inicializa preferences
 
-  if(!ds.search(addr)){
+
+  if (!ds.search(addr)) {
     ds.reset_search();
     Serial.println("Fim daleitura");
+    return;
   }
 
-  for( i = 0; i < 8; i++) {
+  for (i = 0; i < 8; i++) {
     Serial.write(' ');
     Serial.print(addr[i], HEX);
     //display.write(' ');
-    
   }
   if (OneWire::crc8(addr, 7) != addr[7]) {
-      Serial.println("CRC is not valid!");
-      return;
+    Serial.println("CRC is not valid!");
+    return;
   }
 
+  ds.reset();
+  ds.select(addr);
+  ds.write(0x44, 1);  // start conversion, with parasite power on at the end
 
+  delay(1000);  // maybe 750ms is enough, maybe not
+  // we might do a ds.depower() here, but the reset will take care of it.
 
-}*/
+  present = ds.reset();
+  ds.select(addr);
+  ds.write(0xBE);  // Read Scratchpad
+
+  Serial.print("  Data = ");
+  Serial.print(present, HEX);
+  Serial.print(" ");
+  for (i = 0; i < 9; i++) {  // we need 9 bytes
+    data[i] = ds.read();
+    Serial.print(data[i], HEX);
+    Serial.print(" ");
+  }
+  Serial.print(" CRC=");
+  Serial.print(OneWire::crc8(data, 8), HEX);
+  Serial.println();
+
+  // Convert the data to actual temperature
+  // because the result is a 16 bit signed integer, it should
+  // be stored to an "int16_t" type, which is always 16 bits
+  // even when compiled on a 32 bit processor.
+  int16_t raw = (data[1] << 8) | data[0];
+  if (type_s) {
+    raw = raw << 3;  // 9 bit resolution default
+    if (data[7] == 0x10) {
+      // "count remain" gives full 12 bit resolution
+      raw = (raw & 0xFFF0) + 12 - data[6];
+    }
+  } else {
+    byte cfg = (data[4] & 0x60);
+    // at lower res, the low bits are undefined, so let's zero them
+    if (cfg == 0x00) raw = raw & ~7;       // 9 bit resolution, 93.75 ms
+    else if (cfg == 0x20) raw = raw & ~3;  // 10 bit res, 187.5 ms
+    else if (cfg == 0x40) raw = raw & ~1;  // 11 bit res, 375 ms
+    //// default is 12 bit resolution, 750 ms conversion time
+  }
+  temp = (float)raw / 16.0;
+  Serial.print("  Temperature = ");
+  Serial.print(temp);
+  Serial.print(" Celsius, ");
+}
 
 /* ========================================================================= */
 /* --------------------------------- Setup --------------------------------- */
@@ -252,21 +300,21 @@ void setup() {
 
   char htn[30];
   sprintf(htn, "DatLog %S %d", DispositivoName, dispositivo);
-  
+
   //pino para ligar o display
   pinMode(Vext, OUTPUT);
   digitalWrite(Vext, LOW);
   //delay(100);
-  
+
   // 1. Desliga o rádio LoRa explicitamente para economizar bateria
   // A V3 usa pinos internos para o rádio, vamos garantir o Sleep
   pinMode(SS, OUTPUT);
-  digitalWrite(SS, HIGH); // Desativa o seletor do rádio SPI
-  
+  digitalWrite(SS, HIGH);  // Desativa o seletor do rádio SPI
+
   // 2. Desliga a alimentação de periféricos (Display/Sensores)
-  pinMode(Vext, OUTPUT);
-  digitalWrite(Vext, HIGH); // HIGH desliga na V3
-  
+  //pinMode(Vext, OUTPUT);
+  //digitalWrite(Vext, HIGH);  // HIGH desliga na V3
+
   // Open serial communications and wait for port to open:
   Serial.begin(115200);
   display.init();
@@ -351,5 +399,6 @@ void loop() {
     //accessPoint();
     server.handleClient();
   }
+  leSensor();
   delay(10);
 }
