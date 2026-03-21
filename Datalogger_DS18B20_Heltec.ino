@@ -36,14 +36,17 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 /* ========================================================================== */
 /* ---------------------------------- Bibliotecas --------------------------- */
 
-#include <ArduinoOTA.h>
+//#include <ArduinoOTA.h>
 #include <Arduino.h>
 #include <WiFi.h>
+#include <HTTPUpdate.h>          //lib troca de OTA para atualizar o firmware via HTTP
 #include <WebServer.h>
 #include <HTTPClient.h>
+#include <ArduinoJson.h>
 #include <Wire.h>
-#include "HT_SSD1306Wire.h"
-#include <Preferences.h>  //utilizada no lugar da EEPROM
+#include <HT_SSD1306Wire.h>
+#include <Preferences.h>        //utilizada no lugar da EEPROM
+//include <OneWire.h>            //sensor DS18B20
 
 
 /* ========================================================================== */
@@ -52,20 +55,22 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 /* --------------------------------Mapeamento Hardware----------------------- */
 
 #define led LED_BUILTIN  //GPIO ?
-#define ds18b20 GPIO 45  //pino 6 lado esquerdo
+//#define ds18b20 GPIO 45  //pino 6 lado esquerdo
 // Configurações de Tempo (15 minutos = 15 * 60 * 10^6 microssegundos)
 #define uS_TO_S_FACTOR 1000000ULL
 #define TIME_TO_SLEEP 900  //900 = 15min
-Preferences p;
 
 /* ========================================================================== */
 
 /* ========================================================================== */
 /* ------------------------- Instanciando objetos --------------------------- */
 
-//WiFiClient client;  //para conecção com banco de dados
-WebServer server(80);                                                                     // Cria o objeto 'server' na porta 80
-static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED);  // addr , freq , i2c group , resolution , rst
+//WiFiClient client;             //para conecção com banco de dados
+WebServer server(80);            // Cria o objeto 'server' na porta 80
+static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED); 
+                                 // addr , freq , i2c group , resolution , rst
+Preferences p;
+//OneWire ds(2);                   // GPIO2 pino 13 da placa
 
 /* ========================================================================== */
 
@@ -75,8 +80,8 @@ static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RS
 //#define EEPROM_SIZE 64
 //#define EEPROM_SSID_OFFSET 0
 //#define EEPROM_PASSWORD_OFFSET 32
-String ssid = "";
-String password = "";
+const String currentVersion = "1.0.4";
+const char* servidorOTA = "http://10.0.0.11/firmware/v2.bin";
 
 //para conexão com banco de dados
 const char http_site[] = "http://10.0.0.11/php/gravabanco.php";
@@ -87,7 +92,10 @@ const int http_port = 8080;
 /* ========================================================================== */
 /* ------------------------- Variáveis Globais ------------------------------ */
 
+String ssid = "";
+String password = "";
 float temp;
+float offSetDHT = 0.0;    //offSet do sensor DHT21
 
 /* ========================================================================== */
 
@@ -102,6 +110,7 @@ void handleRoot();    // Exibe página inicial
 
 /* ========================================================================== */
 
+
 int enviaDados() {
   //String date = dateTimeStr(time(NULL), -3);
   int ret = 0;
@@ -110,33 +119,49 @@ int enviaDados() {
 
   if (WiFi.status() == WL_CONNECTED) {
 
-    //for (int i = 0; i < MaxSensors; i++) {
-    //  if (sensor[i].id) {
-    String dados_a_enviar = "sensor=" + String(dispositivo) + "&valor=" + String(temp);  //+ "&date=" + date;
+    //envia versão atual junto com os dados, para controle de versão do firmware
+    String dados_a_enviar = "{\"sensor\":\"" + String(dispositivo) + "\", \"valor\":" + String(temp) + "\", \"version\":\"" + currentVersion + "\"}";
+    //"sensor=" + String(dispositivo) + "&valor=" + String(temp);  //+ "&date=" + date;
     http.begin(client, http_site);
-    http.addHeader("Content-Type", "application/x-www-form-urlencoded");  // defino texto plano..
-    int codigo_respuesta = http.POST(dados_a_enviar);
-    if (codigo_respuesta > 0) {
-      //Serial.println("Código HTTP: " + String(codigo_respuesta));
+    http.addHeader("Content-Type", "application/json");  // Definido para Json..
 
-      if (codigo_respuesta == 200) {
-        String cuerpo_respuesta = http.getString();
-        //Serial.println("El servidor respondió: ");
-        //Serial.println(cuerpo_respuesta);
-        ret += 0;
+    int httpCode = http.POST(dados_a_enviar);
+
+    if (httpCode == 200) {
+      String response = http.getString();
+      StaticJsonDocument<200> doc;
+      deserializeJson(doc, response);
+
+      if (doc["update"] == true) {
+        String downloadUrl = doc["url"];
+        Serial.println("Nova versão detectada. Atualizando...");
+
+        // O httpUpdate cuida do download e reinicialização automática
+        httpUpdate.update(client, downloadUrl);
       }
-    } else {
-      //Serial.print("Error enviado POST, código: ");
-      //Serial.println(codigo_respuesta);
-      ret += 1;
     }
   }
-  //}
-  //}
   http.end();  // libero recursos
   return ret;
+}  //enviaDados
 
-}  //end getPage
+void verificarAtualizacao(WiFiClient& client) {
+  // Esse comando baixa o arquivo, verifica a integridade e reinicia o ESP32
+  // Substitua pela URL do seu arquivo .bin
+  t_httpUpdate_return ret = httpUpdate.update(client, servidorOTA);
+
+  switch(ret) {
+    case HTTP_UPDATE_FAILED:
+      Serial.printf("Erro no OTA: (%d): %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+      break;
+    case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("Nenhuma atualização disponível.");
+      break;
+    case HTTP_UPDATE_OK:
+      Serial.println("Atualização concluída com sucesso!");
+      break;
+  }
+}
 
 void handleRoot() {
   // Exibindo a página inicial
@@ -191,21 +216,63 @@ void accessPoint() {
 }  //end acessPoint
 
 
+/*
+void leSensor(){
+  byte i;
+  byte present = 0;
+  byte type_s;
+  byte data[9];
+  byte addr[8];
+  p.begin("DS18B20", "false");      //inicializa preferences
+  
+
+  if(!ds.search(addr)){
+    ds.reset_search();
+    Serial.println("Fim daleitura");
+  }
+
+  for( i = 0; i < 8; i++) {
+    Serial.write(' ');
+    Serial.print(addr[i], HEX);
+    //display.write(' ');
+    
+  }
+  if (OneWire::crc8(addr, 7) != addr[7]) {
+      Serial.println("CRC is not valid!");
+      return;
+  }
+
+
+
+}*/
+
 /* ========================================================================= */
 /* --------------------------------- Setup --------------------------------- */
 void setup() {
 
   char htn[30];
   sprintf(htn, "DatLog %S %d", DispositivoName, dispositivo);
-  // Open serial communications and wait for port to open:
-
+  
+  //pino para ligar o display
   pinMode(Vext, OUTPUT);
   digitalWrite(Vext, LOW);
-
+  //delay(100);
+  
+  // 1. Desliga o rádio LoRa explicitamente para economizar bateria
+  // A V3 usa pinos internos para o rádio, vamos garantir o Sleep
+  pinMode(SS, OUTPUT);
+  digitalWrite(SS, HIGH); // Desativa o seletor do rádio SPI
+  
+  // 2. Desliga a alimentação de periféricos (Display/Sensores)
+  pinMode(Vext, OUTPUT);
+  digitalWrite(Vext, HIGH); // HIGH desliga na V3
+  
+  // Open serial communications and wait for port to open:
   Serial.begin(115200);
   display.init();
   display.clear();
   display.display();
+  display.setContrast(255);
 
 
   //pinMode(led, OUTPUT);
@@ -267,94 +334,6 @@ void setup() {
   }
   //digitalWrite(led, HIGH);
 
-
-  //atualização via OTA
-  ArduinoOTA.setHostname(htn);
-
-  //No authentication by default
-  ArduinoOTA.setPassword("PASSWORD");
-
-  //Password can be set with it's md5 value as well
-  //MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  //ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
-
-  ArduinoOTA.onStart([]() {
-    display.clear();
-    display.setFont(ArialMT_Plain_10);          //Set font size
-    display.setTextAlignment(TEXT_ALIGN_LEFT);  //Set font alignment
-    display.drawString(0, 0, "Start Updating....");
-
-
-
-    Serial.printf("Start Updating....Type:%s\n", (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem");
-  });
-
-  ArduinoOTA.onEnd([]() {
-    display.clear();
-    display.drawString(0, 0, "Update Complete!");
-    Serial.println("Update Complete!");
-
-    ESP.restart();
-  });
-
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    String pro = String(progress / (total / 100)) + "%";
-    int progressbar = (progress / (total / 100));
-    //int progressbar = (progress / 5) % 100;
-    //int pro = progress / (total / 100);
-
-    display.clear();
-#if defined(WIRELESS_STICK)
-    display.drawProgressBar(0, 11, 64, 8, progressbar);  // draw the progress bar
-    display.setTextAlignment(TEXT_ALIGN_CENTER);         // draw the percentage as String
-    display.drawString(10, 20, pro);
-#else
-    display.drawProgressBar(0, 32, 120, 10, progressbar);  // draw the progress bar
-    display.setTextAlignment(TEXT_ALIGN_CENTER);           // draw the percentage as String
-    display.drawString(64, 15, pro);
-#endif
-    display.display();
-
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    String info = "Error Info:";
-    switch (error) {
-      case OTA_AUTH_ERROR:
-        info += "Auth Failed";
-        Serial.println("Auth Failed");
-        break;
-
-      case OTA_BEGIN_ERROR:
-        info += "Begin Failed";
-        Serial.println("Begin Failed");
-        break;
-
-      case OTA_CONNECT_ERROR:
-        info += "Connect Failed";
-        Serial.println("Connect Failed");
-        break;
-
-      case OTA_RECEIVE_ERROR:
-        info += "Receive Failed";
-        Serial.println("Receive Failed");
-        break;
-
-      case OTA_END_ERROR:
-        info += "End Failed";
-        Serial.println("End Failed");
-        break;
-    }
-
-    display.clear();
-    display.drawString(0, 0, info);
-    ESP.restart();
-  });
-
-  ArduinoOTA.begin();
-
 }  //end setup
 
 void loop() {
@@ -367,7 +346,7 @@ void loop() {
 
   } else {
     // Se não estiver conectado à rede Wi-Fi, lidando com as requisições do cliente
-    display.drawString(0,40,"Desconectado");
+    display.drawString(0, 40, "Desconectado");
     display.display();
     //accessPoint();
     server.handleClient();
