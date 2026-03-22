@@ -13,13 +13,17 @@
     processador ESP32
 
     Etapas:
-    1. testar sensor DS18B20
-    2. configurar Display
-    3. Fazer confirgurações WIFI - OTA
-    4. Configurar publicação banco
+    1. testar sensor DS18B20            ok
+    2. configurar Display               ok
+    3. Fazer confirgurações WIFI - OTA  testar
+    4. Configurar publicação banco      testar
     5. Avaliar publicar POST / MQTT
-    6. testar Bateria
+    6. testar Bateria                   
     7. Testar deep sleep
+        7.1   Desligamento Radio LoRa
+        7.2   WiFi Estático
+        7.3   Fluxo Acordar -> Ler Sensor -> medir Bateria -> Conectar WiFi -> 
+              -> Enviar dados -> checar Ota -> Dormir.
 
     8. verificar Lora
 
@@ -41,7 +45,7 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 #endif
 //#include <ArduinoOTA.h>
 #include <OneWire.h>  //sensor DS18B20
-//#include <Arduino.h>
+#include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPUpdate.h>  //lib troca de OTA para atualizar o firmware via HTTP
 #include <WebServer.h>
@@ -50,6 +54,7 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 #include <Wire.h>
 #include <HT_SSD1306Wire.h>
 #include <Preferences.h>  //utilizada no lugar da EEPROM
+#include <LoRaWan_APP.h>
 
 
 /* ========================================================================== */
@@ -62,7 +67,7 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 //#define ds18b20 GPIO 45  //pino 6 lado esquerdo
 // Configurações de Tempo (15 minutos = 15 * 60 * 10^6 microssegundos)
 #define uS_TO_S_FACTOR 1000000ULL
-#define TIME_TO_SLEEP 900  //900 = 15min
+#define TIME_TO_SLEEP 30  //900 = 15min
 
 /* ========================================================================== */
 
@@ -100,7 +105,11 @@ String ssid = "";
 String password = "";
 float temp;
 float offSetDHT = 0.0;  //offSet do sensor DHT21
-
+byte addr[8];           //endereço do sensor DS18B20
+// Configuração de IP Fixo (Otimiza conexão WiFi)
+IPAddress local_IP(192, 168, 15, 12);
+IPAddress gateway(192, 168, 15, 1);
+IPAddress subnet(255, 255, 255, 0);
 /* ========================================================================== */
 
 /* ========================================================================== */
@@ -142,13 +151,18 @@ int enviaDados() {
 
         // O httpUpdate cuida do download e reinicialização automática
         httpUpdate.update(client, downloadUrl);
+        display.drawString(60, 50, "Sucesso");
       }
+    } else {
+      display.drawString(60, 50, "Falha");
     }
+    display.display();
   }
   http.end();  // libero recursos
   return ret;
 }  //enviaDados
 
+/*
 void verificarAtualizacao(WiFiClient& client) {
   // Esse comando baixa o arquivo, verifica a integridade e reinicia o ESP32
   // Substitua pela URL do seu arquivo .bin
@@ -165,7 +179,7 @@ void verificarAtualizacao(WiFiClient& client) {
       Serial.println("Atualização concluída com sucesso!");
       break;
   }
-}
+} */
 
 void handleRoot() {
   // Exibindo a página inicial
@@ -193,16 +207,7 @@ void handleConfig() {
   p.putString("password", password);
 
   p.end();
-  // Salvar as informações na memória EEPROM ou SPIFFS
-  /*strncpy(::ssid, ssid.c_str(), sizeof(::ssid) - 1);
-  strncpy(::password, password.c_str(), sizeof(::password) - 1);
 
-
-  EEPROM.put(EEPROM_SSID_OFFSET, ::ssid);
-  EEPROM.put(EEPROM_PASSWORD_OFFSET, ::password);
-
-  EEPROM.commit();
-  */
   delay(200);
 
   // Reiniciando o dispositivo para se conectar à rede Wi-Fi
@@ -219,32 +224,101 @@ void accessPoint() {
   server.begin();                                 // Iniciando o servidor
 }  //end acessPoint
 
+void conectaWiFi() {
 
+  char htn[30];
+  sprintf(htn, "DatLog %S %d", DispositivoName, dispositivo);
+
+  p.begin("wifi-config", true);
+  delay(50);
+  ssid = p.getString("ssid", "");
+  password = p.getString("password", "");
+
+  p.end();
+  /*
+  Serial.print("Dados WiFi: ");
+  Serial.print(ssid);
+  Serial.print(" : ");
+  Serial.println(password);
+  */
+
+  if (ssid != "" && password != "") {
+
+    // connect to WiFi using saved credentials
+    display.drawString(0, 50, "Conectando...");
+    display.display();
+    int tempo = 0;
+    //WiFi.mode(WIFI_STA);
+    if (!WiFi.config(local_IP, gateway, subnet)) {
+      WiFi.disconnect();
+      accessPoint();
+    }
+    WiFi.begin(ssid, password);
+    //Serial.print("Connecting to ");
+    //Serial.print(ssid);
+    while (WiFi.status() != WL_CONNECTED) {
+      digitalWrite(led, LOW);
+      delay(300);
+      int progress = (tempo) % 6;
+      //display.drawProgressBar(0, 32, 12, 10, progress);
+      //display.display();
+      Serial.print(".");
+      tempo++;
+      if (tempo > 100) {
+        WiFi.disconnect();
+        accessPoint();
+        break;
+      }
+    }
+
+    WiFi.hostname(htn);
+    //Serial.println("");
+    Serial.println("WiFi connected");
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    // start Access Point mode
+    display.drawString(0, 50, "Modo AP...");
+    display.display();
+    accessPoint();
+    server.handleClient();
+  }
+}
 
 void leSensor() {
   byte i;
   byte present = 0;
   byte type_s;
   byte data[9];
-  byte addr[8];
+
   //p.begin("DS18B20", "false");  //inicializa preferences
 
+  p.begin("wifi-config", false);  //inicializa em modo leitura e escrita
+  p.getBytes("addr", addr, 8);
+  //teste
 
-  if (!ds.search(addr)) {
-    ds.reset_search();
-    Serial.println("Fim daleitura");
-    return;
+  if (addr[0] != 0x28) {
+
+    if (!ds.search(addr)) {
+      ds.reset_search();
+      Serial.println("Fim daleitura");
+      delay(100);
+      //return;
+    }
+    Serial.println("Grava endereco");
+    p.putBytes("addr", addr, 8);
   }
 
-  for (i = 0; i < 8; i++) {
-    Serial.write(' ');
-    Serial.print(addr[i], HEX);
-    //display.write(' ');
-  }
   if (OneWire::crc8(addr, 7) != addr[7]) {
     Serial.println("CRC is not valid!");
     return;
   }
+
+  String enderecoFormatado = addrParaString(addr);
+  display.clear();
+  display.drawString(0, 10, enderecoFormatado);
+  display.display();
+  Serial.println(enderecoFormatado);
 
   ds.reset();
   ds.select(addr);
@@ -260,11 +334,13 @@ void leSensor() {
   Serial.print("  Data = ");
   Serial.print(present, HEX);
   Serial.print(" ");
+
   for (i = 0; i < 9; i++) {  // we need 9 bytes
     data[i] = ds.read();
     Serial.print(data[i], HEX);
     Serial.print(" ");
   }
+
   Serial.print(" CRC=");
   Serial.print(OneWire::crc8(data, 8), HEX);
   Serial.println();
@@ -288,103 +364,76 @@ void leSensor() {
     else if (cfg == 0x40) raw = raw & ~1;  // 11 bit res, 375 ms
     //// default is 12 bit resolution, 750 ms conversion time
   }
+
   temp = (float)raw / 16.0;
   Serial.print("  Temperature = ");
   Serial.print(temp);
-  Serial.print(" Celsius, ");
-}
+  Serial.println(" Celsius, ");
+  display.setFont(ArialMT_Plain_16);
+
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  char bfTemp[20];
+  sprintf(bfTemp, "%.2f °C", temp);
+  display.drawString(64, 30, bfTemp);
+  display.display();
+  delay(1000);
+  display.setFont(ArialMT_Plain_10);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+}  //end le sensor
+
+String addrParaString(byte* pAddr) {
+  String str = "";
+  for (uint8_t i = 0; i < 8; i++) {
+    if (pAddr[i] < 16) str += "0";  // Adiciona zero à esquerda se for < 0x10
+    str += String(pAddr[i], HEX);
+    if (i < 7) str += ":";  // Adiciona separador entre os bytes
+  }
+  str.toUpperCase();
+  return str;
+}  //end addrParaString
+
 
 /* ========================================================================= */
 /* --------------------------------- Setup --------------------------------- */
 void setup() {
-
-  char htn[30];
-  sprintf(htn, "DatLog %S %d", DispositivoName, dispositivo);
-
-  //pino para ligar o display
+  //pino para ligar o display e o Radio e periféricos
   pinMode(Vext, OUTPUT);
   digitalWrite(Vext, LOW);
   //delay(100);
-
-  // 1. Desliga o rádio LoRa explicitamente para economizar bateria
-  // A V3 usa pinos internos para o rádio, vamos garantir o Sleep
-  pinMode(SS, OUTPUT);
-  digitalWrite(SS, HIGH);  // Desativa o seletor do rádio SPI
-
-  // 2. Desliga a alimentação de periféricos (Display/Sensores)
-  //pinMode(Vext, OUTPUT);
-  //digitalWrite(Vext, HIGH);  // HIGH desliga na V3
+  delay(10);
+  // 1. Inicializa o rádio LoRa apenas para colocá-lo em Deep Sleep
+  // Isso é essencial na Heltec V3 para cortar o consumo do SX1262
+  //Radio.Init();
+  Radio.Sleep();
 
   // Open serial communications and wait for port to open:
   Serial.begin(115200);
   display.init();
   display.clear();
-  display.display();
-  display.setContrast(255);
+  //display.display();
+  display.setContrast(122);
 
 
-  //pinMode(led, OUTPUT);
-  //
-  //settimeofday_cb(ntpSync_cb);  //Definição de callback ntp
+  // 2. Leitura do sensor
+  leSensor();
 
-  // Função para inicializar o cliente NTP
-  //fuso horário , horário de verão , ntp server
-  //configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  // 3. Le bateria
 
-  //EEPROM.begin(EEPROM_SIZE);
-  p.begin("wifi-config", true);
-
-  delay(10);
-
-  ssid = p.getString("ssid", "");
-  password = p.getString("password", "");
-
-  p.end();
-  Serial.println(ssid);
-  Serial.println(password);
-
-
-  if (ssid != "" && password != "") {
-    // connect to WiFi using saved credentials
-    display.drawString(0, 10, "Conectando...");
-    display.display();
-    int tempo = 0;
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
-    //Serial.print("Connecting to ");
-    //Serial.print(ssid);
-    while (WiFi.status() != WL_CONNECTED) {
-      digitalWrite(led, LOW);
-      delay(500);
-      int progress = (tempo) % 6;
-      display.drawProgressBar(0, 32, 12, 10, progress);
-      //display.display();
-      Serial.print(".");
-      tempo++;
-      if (tempo > 60) {
-        WiFi.disconnect();
-        accessPoint();
-        break;
-      }
-    }
-
-    WiFi.hostname(htn);
-    //Serial.println("");
-    //Serial.println("WiFi connected");
-    //Serial.println("IP address: ");
-    //Serial.println(WiFi.localIP());
-  } else {
-    // start Access Point mode
-    display.drawString(0, 10, "Modo AP...");
-    display.display();
-    accessPoint();
-    server.handleClient();
-  }
+  //  4. Conecta WiFi
+  conectaWiFi();
+  enviaDados();
   //digitalWrite(led, HIGH);
+
+  // 5. DeepSleep
+  delay(400);
+  Serial.println(millis());
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+  esp_deep_sleep_start();
 
 }  //end setup
 
 void loop() {
+  /*
   if (WiFi.status() == WL_CONNECTED) {
     //verificar para eliminar ou inibir
     display.clear();
@@ -399,6 +448,7 @@ void loop() {
     //accessPoint();
     server.handleClient();
   }
-  leSensor();
+  //leSensor();
   delay(10);
+  */
 }
