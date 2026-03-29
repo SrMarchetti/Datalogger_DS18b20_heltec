@@ -16,12 +16,12 @@
     1. testar sensor DS18B20            ok
     2. configurar Display               ok
     3. Fazer confirgurações WIFI - OTA  testar
-    4. Configurar publicação banco      testar
+    4. Configurar publicação banco      ok
     5. Avaliar publicar POST / MQTT
-    6. testar Bateria                   
-    7. Testar deep sleep
-        7.1   Desligamento Radio LoRa
-        7.2   WiFi Estático
+    6. testar Bateria                   ok                
+    7. Testar deep sleep                ok
+        7.1   Desligamento Radio LoRa   ok
+        7.2   WiFi Estático             ok
         7.3   Fluxo Acordar -> Ler Sensor -> medir Bateria -> Conectar WiFi -> 
               -> Enviar dados -> checar Ota -> Dormir.
 
@@ -32,7 +32,7 @@
 /*============================================================================
  *      Definições específicas de cada dispositivo
  *============================================================================*/
-const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
+//const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 #define DispositivoName "Teste"  //HostName e OTA
 
 /* ========================================================================== */
@@ -62,8 +62,11 @@ const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
 /* ========================================================================== */
 /* --------------------------------Mapeamento Hardware----------------------- */
 
-#define led LED_BUILTIN  //GPIO ?
+#define led 35  //GPIO ?
 #define oneWire_pin 2
+
+#define BAT_ADC_PIN 1    // Pino de leitura (ADC)
+#define VEXT_CONTROL 37  // Pino que ativa o divisor resistivo e periféricos
 //#define ds18b20 GPIO 45  //pino 6 lado esquerdo
 // Configurações de Tempo (15 minutos = 15 * 60 * 10^6 microssegundos)
 #define uS_TO_S_FACTOR 1000000ULL
@@ -86,18 +89,18 @@ OneWire ds(oneWire_pin);  // GPIO2 pino 13 da placa
 /* ========================================================================== */
 /* -------------------------- Macros e Constantes --------------------------- */
 
-//#define DEBUG true
+#define DEBUG true  //Comentar para não imprimir serial
 
 #ifdef DEBUG
-  #define DEBUG_PRINT(x)      Serial.print(x)
-  #define DEBUG_PRINT2(x,y)   Serial.print(x,y)
-  #define DEBUG_PRINTLN(x)    Serial.println(x)
-  #define DEBUG_BEGIN(x)      Serial.begin(x)
+#define DEBUG_PRINT(x) Serial.print(x)
+#define DEBUG_PRINT2(x, y) Serial.print(x, y)
+#define DEBUG_PRINTLN(x) Serial.println(x)
+#define DEBUG_BEGIN(x) Serial.begin(x)
 #else
-  #define DEBUG_PRINT(x)
-  #define DEBUG_PRINT2(x,y) 
-  #define DEBUG_PRINTLN(x)
-  #define DEBUG_BEGIN(x)
+#define DEBUG_PRINT(x)
+#define DEBUG_PRINT2(x, y)
+#define DEBUG_PRINTLN(x)
+#define DEBUG_BEGIN(x)
 #endif
 
 //#define EEPROM_SIZE 64
@@ -107,23 +110,26 @@ const String currentVersion = "1.0.4";
 const char* servidorOTA = "http://10.0.0.11/firmware/v2.bin";
 
 //para conexão com banco de dados
-const char http_site[] = "http://10.0.0.11/php/gravabanco.php";
-const int http_port = 8080;
+const char http_site[] = "http://192.168.15.19:3001/v2/gravasensor"; //"http://10.0.0.11/php/gravabanco.php";
+const int http_port = 3001;
 
+const float fatorVoltagem = 1.003367;
 /* ========================================================================== */
 
 /* ========================================================================== */
 /* ------------------------- Variáveis Globais ------------------------------ */
 
-String ssid = "";
-String password = "";
+//String ssid = "";
+//String password = "";
+String enderecoFormatado;
 float temp;
 float offSetDHT = 0.0;  //offSet do sensor DHT21
-byte addr[8];           //endereço do sensor DS18B20
+float bateria = 0.0;
+byte addr[8];  //endereço do sensor DS18B20
 // Configuração de IP Fixo (Otimiza conexão WiFi)
-IPAddress local_IP(192, 168, 15, 12);
-IPAddress gateway(192, 168, 15, 1);
-IPAddress subnet(255, 255, 255, 0);
+//IPAddress local_IP(192, 168, 15, 12);
+//IPAddress gateway(192, 168, 15, 1);
+//IPAddress subnet(255, 255, 255, 0);
 /* ========================================================================== */
 
 /* ========================================================================== */
@@ -147,8 +153,10 @@ int enviaDados() {
   if (WiFi.status() == WL_CONNECTED) {
 
     //envia versão atual junto com os dados, para controle de versão do firmware
-    String dados_a_enviar = "{\"sensor\":\"" + String(dispositivo) + "\", \"valor\":" + String(temp) + "\", \"version\":\"" + currentVersion + "\"}";
+    String dados_a_enviar = "{\"sensor\":\"" + enderecoFormatado + "\", \"valor\":" + String(temp) + 
+      ", \"bateria\":" + String(bateria) + ", \"version\":\"" + currentVersion + "\"}";
     //"sensor=" + String(dispositivo) + "&valor=" + String(temp);  //+ "&date=" + date;
+    DEBUG_PRINTLN(dados_a_enviar);
     http.begin(client, http_site);
     http.addHeader("Content-Type", "application/json");  // Definido para Json..
 
@@ -157,6 +165,7 @@ int enviaDados() {
     if (httpCode == 200) {
       String response = http.getString();
       JsonDocument doc;
+      ret = 1;
       deserializeJson(doc, response);
 
       if (doc["update"] == true) {
@@ -169,6 +178,8 @@ int enviaDados() {
       }
     } else {
       display.drawString(60, 50, "Falha");
+      // apagar para tratar quando tiver falha no envio
+      ret = 1;
     }
     display.display();
   }
@@ -197,8 +208,26 @@ void verificarAtualizacao(WiFiClient& client) {
 
 void handleRoot() {
   // Exibindo a página inicial
-  display.drawString(0, 40, "server");
+  display.drawString(0, 40, "server 192.168.4.1");
   display.display();
+  String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<style>body{font-family:sans-serif; padding:20px;} input{margin-bottom:10px; width:100%; padding:8px;}</style></head><body>";
+  html += "<h1>Configuracao Wi-Fi</h1>";
+  html += "<form method='post' action='/config'>";
+
+  html += "SSID:<br><input type='text' name='ssid' required><br>";
+  html += "Senha:<br><input type='password' name='password'><br><br>";
+
+  html += "<b>IP Estatico (Opcional):</b><br>";
+  html += "IP:<br><input type='text' name='ip' placeholder='192.168.1.100' pattern='^((\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.){3}(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])$'><br>";
+  html += "Gateway:<br><input type='text' name='gateway' placeholder='192.168.1.1' pattern='^((\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.){3}(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])$'><br>";
+  html += "Subnet:<br><input type='text' name='subnet' placeholder='255.255.255.0' pattern='^((\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])\\.){3}(\\d{1,2}|1\\d\\d|2[0-4]\\d|25[0-5])$'><br><br>";
+
+  html += "<input type='submit' value='Salvar e Reiniciar'>";
+  html += "</form></body></html>";
+
+  server.send(200, "text/html", html);
+  /*
   String html = "<html><body>";
   html += "<h1>Configuracao do Wi-Fi</h1>";
   html += "<p>Por favor, configure as informacoes de Wi-Fi.</p>";
@@ -208,19 +237,35 @@ void handleRoot() {
   html += "<input type='submit' value='Salvar'>";
   html += "</form></body></html>";
 
-  server.send(200, "text/html", html);
+  server.send(200, "text/html", html);*/
 }  //end handleRoot
 
 void handleConfig() {
   // Recebendo as informações de SSID e senha do usuário
   String ssid = server.arg("ssid");
   String password = server.arg("password");
+  String ipStr = server.arg("ip");
+  String gwStr = server.arg("gateway");
+  String subStr = server.arg("subnet");
+
+  // Validação: Se o IP foi preenchido, os outros campos de rede também devem ser válidos
+  if (ipStr.length() > 0) {
+    IPAddress t_ip, t_gw, t_sub;
+    if (!t_ip.fromString(ipStr) || !t_gw.fromString(gwStr) || !t_sub.fromString(subStr)) {
+      server.send(400, "text/html", "<html><body><h1>Erro!</h1><p>Enderecos IP invalidos.</p><a href='/'>Voltar</a></body></html>");
+      return;
+    }
+  }
 
   p.begin("wifi-config", false);
   p.putString("ssid", ssid);
   p.putString("password", password);
-
+  p.putString("ip", ipStr);
+  p.putString("gateway", gwStr);
+  p.putString("subnet", subStr);
   p.end();
+
+  server.send(200, "text/html", "<html><body><h1>Sucesso!</h1><p>Reiniciando o ESP32...</p></body></html>");
 
   delay(200);
 
@@ -230,6 +275,9 @@ void handleConfig() {
 
 void accessPoint() {
   //DEBUG_PRINTLN("Starting Access Point...");
+  display.drawString(0, 50, "Modo AP...");
+  display.display();
+
   WiFi.mode(WIFI_AP);
   WiFi.softAP("ESP8266AP", "123456789");
   //DEBUG_PRINTLN("Modo Access Point ativado.");
@@ -241,13 +289,15 @@ void accessPoint() {
 void conectaWiFi() {
 
   char htn[30];
-  sprintf(htn, "DatLog %S %d", DispositivoName, dispositivo);
+  sprintf(htn, "DatLog %S", DispositivoName);
 
   p.begin("wifi-config", true);
-  delay(50);
-  ssid = p.getString("ssid", "");
-  password = p.getString("password", "");
-
+  //delay(50);
+  String ssid = p.getString("ssid", "");
+  String password = p.getString("password", "");
+  String s_ip = p.getString("ip", "");
+  String s_gw = p.getString("gateway", "");
+  String s_sub = p.getString("subnet", "");
   p.end();
   /*
   DEBUG_PRINT("Dados WiFi: ");
@@ -257,10 +307,48 @@ void conectaWiFi() {
   */
 
   if (ssid != "" && password != "") {
+    int reinicio = 0;
+      int tentativas = 0;
+    while (reinicio < 5) {
 
+      WiFi.mode(WIFI_STA);
+      // Se houver configuração de IP fixo salva, aplica antes do begin
+      if (s_ip.length() < 5) {
+        IPAddress ip, gw, sub;
+        ip.fromString(s_ip);
+        gw.fromString(s_gw);
+        sub.fromString(s_sub);
+        WiFi.config(ip, gw, sub);
+        DEBUG_PRINTLN("IP Fixo");
+        DEBUG_PRINTLN(s_ip);
+      }
+
+      WiFi.begin(ssid.c_str(), password.c_str());
+      tentativas = 0;
+      // Lógica de timeout para voltar ao modo AP se falhar
+      while (WiFi.status() != WL_CONNECTED && tentativas < 30) {
+        DEBUG_PRINT(".");
+        delay(400);
+        tentativas++;
+      }
+      //WiFi.disconnect();
+      DEBUG_PRINTLN("reinicio");
+      reinicio++;
+      if(WiFi.status() == WL_CONNECTED){
+        reinicio = 6;
+        break;
+      }
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      accessPoint();
+      server.handleClient();
+
+    }
+    WiFi.hostname(htn);
+    /*
     // connect to WiFi using saved credentials
-    display.drawString(0, 50, "Conectando...");
-    display.display();
+    //display.drawString(0, 50, "Conectando...");
+    //display.display();
     int tempo = 0;
     //WiFi.mode(WIFI_STA);
     if (!WiFi.config(local_IP, gateway, subnet)) {
@@ -273,6 +361,7 @@ void conectaWiFi() {
     while (WiFi.status() != WL_CONNECTED) {
       digitalWrite(led, LOW);
       delay(400);
+      digitalWrite(led, HIGH);
       int progress = (tempo) % 6;
       //display.drawProgressBar(0, 32, 12, 10, progress);
       //display.display();
@@ -290,10 +379,9 @@ void conectaWiFi() {
     DEBUG_PRINTLN("WiFi connected");
     DEBUG_PRINTLN("IP address: ");
     DEBUG_PRINTLN(WiFi.localIP());
+    */
   } else {
     // start Access Point mode
-    display.drawString(0, 50, "Modo AP...");
-    display.display();
     accessPoint();
     server.handleClient();
   }
@@ -328,10 +416,11 @@ void leSensor() {
     return;
   }
 
-  String enderecoFormatado = addrParaString(addr);
-  display.clear();
-  display.drawString(0, 10, enderecoFormatado);
-  display.display();
+  enderecoFormatado = addrParaString(addr);
+
+  //display.clear();
+  //display.drawString(0, 10, enderecoFormatado);
+  //display.display();
   DEBUG_PRINTLN(enderecoFormatado);
 
   ds.reset();
@@ -395,23 +484,62 @@ void leSensor() {
   display.setTextAlignment(TEXT_ALIGN_LEFT);
 }  //end le sensor
 
-String addrParaString(byte* pAddr) {
-  String str = "";
-  for (uint8_t i = 0; i < 8; i++) {
-    if (pAddr[i] < 16) str += "0";  // Adiciona zero à esquerda se for < 0x10
-    str += String(pAddr[i], HEX);
-    if (i < 7) str += ":";  // Adiciona separador entre os bytes
-  }
-  str.toUpperCase();
-  return str;
+String addrParaString(byte* sensorAddress) {
+  char enderecoHex[17]; // 16 chars + null terminator
+  snprintf(enderecoHex, sizeof(enderecoHex),
+    "%02X%02X%02X%02X%02X%02X%02X%02X",
+    sensorAddress[0], sensorAddress[1],
+    sensorAddress[2], sensorAddress[3],
+    sensorAddress[4], sensorAddress[5],
+    sensorAddress[6], sensorAddress[7]
+  );
+  return enderecoHex;
 }  //end addrParaString
 
+float lerVoltagemBateria() {
+  // 1. Ativa o Vext (Na V3, LOW ativa o regulador de periféricos/divisor)
+  pinMode(VEXT_CONTROL, OUTPUT);
+  digitalWrite(VEXT_CONTROL, HIGH);
+  delay(10);  // Pequena pausa para estabilizar a tensão
 
+  // 2. Configura a atenuação para ler até ~3.9V ou mais
+  // O ESP32-S3 tem um ADC que precisa de calibração para precisão real
+  analogReadResolution(12);  // 0-4095
+  analogSetAttenuation(ADC_11db);
+
+  uint16_t raw = analogReadMilliVolts(BAT_ADC_PIN);
+
+  // 3. Converte para Voltagem
+  // O divisor da Heltec V3 é de 390k / 100k (fator de ~4.9)
+  // Multiplicamos pelo fator de escala do divisor e pela referência do ADC (3.3V)
+  float voltagem = (float)raw * 490 / 100000 * fatorVoltagem;  // Ajuste o 4.02 conforme seu multímetro
+  DEBUG_PRINTLN(raw);
+
+  // 4. Desliga o Vext para economizar energia no Deep Sleep
+  digitalWrite(VEXT_CONTROL, LOW);
+
+  return voltagem;
+}
+
+void dormir() {
+  display.drawString(0, 0, String(millis()));
+  display.display();
+  delay(600);
+
+  DEBUG_PRINTLN(millis());
+  //digitalWrite(Vext, HIGH);   //Desliga o pino VEX
+  Serial.flush();
+  uint32_t tempSleep = (millis() / 1000) < TIME_TO_SLEEP ? TIME_TO_SLEEP - (millis() / 1000) : TIME_TO_SLEEP;
+  esp_sleep_enable_timer_wakeup(tempSleep * uS_TO_S_FACTOR);
+  esp_deep_sleep_start();
+}
 /* ========================================================================= */
 /* --------------------------------- Setup --------------------------------- */
 void setup() {
   //pino para ligar o display e o Radio e periféricos
   pinMode(Vext, OUTPUT);
+  pinMode(led, OUTPUT);
+
   digitalWrite(Vext, LOW);
   delay(10);
   // 1. Inicializa o rádio LoRa apenas para colocá-lo em Deep Sleep
@@ -426,28 +554,34 @@ void setup() {
   //display.display();
   display.setContrast(122);
 
+  DEBUG_PRINTLN(esp_sleep_get_wakeup_cause());
 
   // 2. Leitura do sensor
+  digitalWrite(led, LOW);
   leSensor();
+  digitalWrite(led, HIGH);
 
   // 3. Le bateria
+  bateria = lerVoltagemBateria();
+  char sBat[30];
+  sprintf(sBat, "Voltagem: %.2f V", bateria);
+  display.drawString(0, 10, sBat);
+  display.display();
+  DEBUG_PRINTLN(bateria);
 
   //  4. Conecta WiFi
   conectaWiFi();
-  enviaDados();
+  if (enviaDados())
+    dormir();
   //digitalWrite(led, HIGH);
 
-  // 5. DeepSleep
-  display.drawString(0,0,String(millis()));
-  display.display();
-  delay(600);
-  DEBUG_PRINTLN(millis());
-  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP-millis() * uS_TO_S_FACTOR);
-  esp_deep_sleep_start();
+  // 5. DeepSleep - movido para ser chamado via enviaDados
 
 }  //end setup
 
 void loop() {
+  server.handleClient();
+  delay(10);
   /*
   if (WiFi.status() == WL_CONNECTED) {
     //verificar para eliminar ou inibir
@@ -466,4 +600,3 @@ void loop() {
   delay(10);
   */
 }
-
