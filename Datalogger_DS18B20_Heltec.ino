@@ -90,7 +90,7 @@ OneWire ds(oneWire_pin);  // GPIO2 pino 13 da placa
 /* ========================================================================== */
 /* -------------------------- Macros e Constantes --------------------------- */
 
-#define DEBUG true  //Comentar para não imprimir serial
+//#define DEBUG true  //Comentar para não imprimir serial
 
 #ifdef DEBUG
 #define DEBUG_PRINT(x) Serial.print(x)
@@ -142,13 +142,14 @@ RTC_DATA_ATTR uint8_t rtcBssid[6];
 RTC_DATA_ATTR int32_t rtcChannel;
 RTC_DATA_ATTR uint8_t rtcaddr[8];      // endereço DS18B20 HEX
 RTC_DATA_ATTR char rtcSensorAddr[17];  // endereço DS18B20 char
+RTC_DATA_ATTR uint8_t rtcQtFalha = 0;
 
 /* ========================================================================== */
 
 /* ========================================================================== */
 /* ---------------------------- Protótipo das funções ----------------------- */
 
-int enviaDados();  //Grava banco de dados
+bool enviaDados();  //Grava banco de dados
 
 void accessPoint();   // Habilita como AccessPoint
 void handleConfig();  // Recebe SSID e Senha
@@ -157,23 +158,23 @@ void handleRoot();    // Exibe página inicial
 /* ========================================================================== */
 
 
-int enviaDados() {
+bool enviaDados() {
   //String date = dateTimeStr(time(NULL), -3);
-  int ret = 0;
+  int ret = false;
   HTTPClient http;
   WiFiClient client;
 
   if (WiFi.status() == WL_CONNECTED) {
-    String dados_a_enviar = "{\"sensor\":\"286FC096F0013C67\", \"valor\":27.06, \"bateria\":3.72, \"version\":\"1.0.4\"}";
+    //String dados_a_enviar = "{\"sensor\":\"286FC096F0013C67\", \"valor\":27.06, \"bateria\":3.72, \"version\":\"1.0.4\"}";
     //envia versão atual junto com os dados, para controle de versão do firmware
-    /*
-    String dados_a_enviar = "{\"sensor\":\"286FC096F0013C67\", \"valor\":" 
-                                  + String(temp) + ", \"bateria\":" 
-                                  + String(bateria) + ", \"version\":\"" 
-                                  + currentVersion + "\"}";
-                                  */
+    
+    String dados_a_enviar = "{\"sensor\":\""+ String(rtcSensorAddr) +
+                              "\", \"valor\":" + String(temp) + 
+                              ", \"bateria\":" + String(bateria) + 
+                              ", \"version\":\"" + currentVersion + "\"}";
+                                  
     //"sensor=" + String(dispositivo) + "&valor=" + String(temp);  //+ "&date=" + date;
-    //DEBUG_PRINTLN(dados_a_enviar);
+    DEBUG_PRINTLN(dados_a_enviar);
     http.begin(client, http_site);
     //http.setTimeout(10000);                              // timeout 10s
     http.addHeader("Content-Type", "application/json");  // Definido para Json..
@@ -185,7 +186,7 @@ int enviaDados() {
     if (httpCode == 200) {
       String response = http.getString();
       JsonDocument doc;
-      ret = 1;
+      ret = true;
       deserializeJson(doc, response);
 
       if (doc["update"] == true) {
@@ -199,11 +200,18 @@ int enviaDados() {
     } else {
       display.drawString(60, 50, "Falha");
       // apagar para tratar quando tiver falha no envio
-      ret = 1;
+      ret = false;
     }
     display.display();
   }
-  http.end();  // libero recursos
+  //Liberando recursos
+  // 1. Finaliza o HTTP
+  http.end();
+
+  // 2. Desliga o WiFi
+  WiFi.disconnect(true);  // true = apaga credenciais da RAM
+  WiFi.mode(WIFI_OFF);
+  
   return ret;
 }  //enviaDados
 
@@ -349,12 +357,6 @@ bool conectaWiFi() {
     }
   }
 
-  // DEBUG_PRINT("SSID: ");
-  // for (int i = 0; i < 32; i++){
-  //   Serial.print(rtcSsid[i], HEX);
-  //   Serial.print(" ");
-  // }
-
   int tentativas = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(100);
@@ -378,110 +380,11 @@ bool conectaWiFi() {
   return true;
 }
 
-/* substituido pelo RTC_DATA
-  p.begin("wifi-config", true);
-  //delay(50);
-  String ssid = p.getString("ssid", "");
-  String password = p.getString("password", "");
-  String s_ip = p.getString("ip", "");
-  String s_gw = p.getString("gateway", "");
-  String s_sub = p.getString("subnet", "");
-  p.end();
-
-  if (ssid != "" && password != "") {
-    int reinicio = 0;
-      int tentativas = 0;
-    while (reinicio < 5) {
-
-      WiFi.mode(WIFI_STA);
-      // Se houver configuração de IP fixo salva, aplica antes do begin
-      if (s_ip.length() < 5) {
-        IPAddress ip, gw, sub;
-        ip.fromString(s_ip);
-        gw.fromString(s_gw);
-        sub.fromString(s_sub);
-        WiFi.config(ip, gw, sub);
-        DEBUG_PRINTLN("IP Fixo");
-        DEBUG_PRINTLN(s_ip);
-      }
-
-      WiFi.begin(ssid.c_str(), password.c_str());
-      tentativas = 0;
-      // Lógica de timeout para voltar ao modo AP se falhar
-      while (WiFi.status() != WL_CONNECTED && tentativas < 30) {
-        DEBUG_PRINT(".");
-        delay(400);
-        tentativas++;
-      }
-      //WiFi.disconnect();
-      DEBUG_PRINTLN("reinicio");
-      reinicio++;
-      if(WiFi.status() == WL_CONNECTED){
-        reinicio = 6;
-        break;
-      }
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-      accessPoint();
-      server.handleClient();
-
-    }
-    */
-
-/* - Versão 01
-    // connect to WiFi using saved credentials
-    //display.drawString(0, 50, "Conectando...");
-    //display.display();
-    int tempo = 0;
-    //WiFi.mode(WIFI_STA);
-    if (!WiFi.config(local_IP, gateway, subnet)) {
-      WiFi.disconnect();
-      accessPoint();
-    }
-    WiFi.begin(ssid, password);
-    //DEBUG_PRINT("Connecting to ");
-    //DEBUG_PRINT(ssid);
-    while (WiFi.status() != WL_CONNECTED) {
-      digitalWrite(led, LOW);
-      delay(400);
-      digitalWrite(led, HIGH);
-      int progress = (tempo) % 6;
-      //display.drawProgressBar(0, 32, 12, 10, progress);
-      //display.display();
-      DEBUG_PRINT(".");
-      tempo++;
-      if (tempo > 100) {
-        WiFi.disconnect();
-        accessPoint();
-        break;
-      }
-    }
-
-    WiFi.hostname(htn);
-    //DEBUG_PRINTLN("");
-    DEBUG_PRINTLN("WiFi connected");
-    DEBUG_PRINTLN("IP address: ");
-    DEBUG_PRINTLN(WiFi.localIP());
-    */
-
-/*
-  } else {
-    // start Access Point mode
-    accessPoint();
-    server.handleClient();
-  }*/
-
-
 void leSensor() {
   byte i;
   byte present = 0;
   byte type_s;
   byte data[9];
-
-  //p.begin("DS18B20", "false");  //inicializa preferences
-
-  //preferences.getBytes("addr", addr, 8);
-  //teste
 
   if (rtcaddr[0] != 0x28) {
 
@@ -503,12 +406,12 @@ void leSensor() {
   }
 
   //rtcSensorAddr = addrParaString(rtcaddr);
-  strlcpy(rtcSensorAddr, addrParaString(rtcaddr).c_str(), sizeof(rtcSensorAddr));
+  //strlcpy(rtcSensorAddr, addrParaString(rtcaddr).c_str(), sizeof(rtcSensorAddr));
   //display.clear();
   //display.drawString(0, 10, enderecoFormatado);
   //display.display();
-  DEBUG_PRINT("rtcSensorAddr: ");
-  DEBUG_PRINTLN(rtcSensorAddr);
+  //DEBUG_PRINT("rtcSensorAddr: ");
+  //DEBUG_PRINTLN(rtcSensorAddr);
 
   ds.reset();
   ds.select(rtcaddr);
@@ -619,10 +522,11 @@ void carregaPreferences() {
   String gw = preferences.getString("gateway", "");
   String sn = preferences.getString("subnet", "");
   //String dns        = preferences.getString("dns", "");
-  String sensorAddr = preferences.getString("sensorAddr", "");
+  //String sensorAddr = preferences.getString("sensorAddr", "");
   preferences.getBytes("addr", rtcaddr, 8);
   preferences.end();
 
+  
   // DEBUG_PRINT("SSID: ");
   // for (int i = 0; i < ssid.length(); i++) {
   //   Serial.print(ssid[i], HEX);
@@ -635,6 +539,7 @@ void carregaPreferences() {
   DEBUG_PRINTLN(ip);
   DEBUG_PRINTLN(gw);
   DEBUG_PRINTLN(sn);
+
 
   if (ssid != "" || password != "") {
     strlcpy(rtcSsid, ssid.c_str(), sizeof(rtcSsid));
@@ -656,49 +561,64 @@ void carregaPreferences() {
     //rtcDns          = (uint32_t)IPAddress().fromString(dns);
     rtcIPValido = true;
   }
-  //strlcpy(rtcSensorAddr, sensorAddr.c_str(), sizeof(rtcSensorAddr));
+
   if (rtcaddr[0] == 0x28) {
-    //rtcaddr           = addr;
-    sensorAddr = addrParaString(rtcaddr);
-    strlcpy(rtcSensorAddr, sensorAddr.c_str(), sizeof(sensorAddr));
+    strlcpy(rtcSensorAddr, addrParaString(rtcaddr).c_str(), sizeof(rtcSensorAddr));
+    DEBUG_PRINT("rtcSensorAdr: ");
+    DEBUG_PRINTLN(rtcSensorAddr);
+
     rtcSensorValido = true;
   }
 }  //End CarregaPreferences
 
-/* verificar pois a logica deve estar em cada ponto de salvamento de preferences
-void salvaPreferences(String ssid, String senha) {
-    // Chamado apenas uma vez no primeiro boot ou ao reconfigurar
-    preferences.begin("config", false);
-    
-    preferences.putString("ssid",       ssid);
-    preferences.putString("senha",      senha);
-    preferences.putString("ip",         WiFi.localIP().toString());
-    preferences.putString("gateway",    WiFi.gatewayIP().toString());
-    preferences.putString("subnet",     WiFi.subnetMask().toString());
-    preferences.putString("dns",        WiFi.dnsIP().toString());
-    preferences.putString("sensorAddr", rtcSensorAddr);
-    
-    preferences.end();
-}
-*/
-
 void dormir(bool falha) {
-  uint32_t tempo = millis();
+  uint32_t tempo = millis()+800;
+  
   display.drawString(0, 0, String(tempo));
-  if (falha) display.drawString(20, 0, "---FALHOU---");
-  display.display();
-  delay(600);
-
   DEBUG_PRINTLN(tempo);
-  //digitalWrite(Vext, HIGH);   //Desliga o pino VEX
-  Serial.flush();
+
   if (falha) {
-    DEBUG_PRINTLN("falhou - Resetando");
-    ESP.restart();
-  }
+    rtcQtFalha++;
+    if (rtcQtFalha > 3){
+      rtcQtFalha = 0;
+      display.drawString(40, 0, "---RESETANDO---");
+      display.display();
+      delay(800);
+      DEBUG_PRINTLN("falhou - Resetando");
+      
+      desligaRecursos();  
+      ESP.restart();
+    }
+    display.drawString(20, 0, "---FALHOU---");
+    display.display();
+    delay(800);
+    
+    desligaRecursos();
+    esp_sleep_enable_timer_wakeup(10 * uS_TO_S_FACTOR);
+    esp_deep_sleep_start();
+  } 
+  
+  display.display();
+  delay(800);
+  rtcQtFalha = 0;
+  
+  desligaRecursos();
   uint32_t tempSleep = (tempo / 1000) < TIME_TO_SLEEP ? TIME_TO_SLEEP - (tempo / 1000) : TIME_TO_SLEEP;
   esp_sleep_enable_timer_wakeup(tempSleep * uS_TO_S_FACTOR);
   esp_deep_sleep_start();
+}
+
+void desligaRecursos(){
+  //desliga OLED
+  display.displayOff();
+  //desliga sensores e outros VEX
+  digitalWrite(Vext, HIGH);
+  //termina serial
+  #ifdef DEBUG
+    DEBUG_PRINTLN("desligando serial");
+    Serial.flush();
+  #endif
+
 }
 /* ========================================================================= */
 /* --------------------------------- Setup --------------------------------- */
@@ -715,8 +635,8 @@ void setup() {
   Radio.Sleep();
 
   //desliga o bluetooth
-  //btStop();
-  //esp_bt_controller_disable();
+  btStop();
+  esp_bt_controller_disable();
 
   // Open serial communications and wait for port to open:
   DEBUG_BEGIN(115200);
@@ -725,8 +645,13 @@ void setup() {
   //display.display();
   display.setContrast(122);
 
+  //se o motivo do boot for 0 le os dados de preferences
+  if (!esp_sleep_get_wakeup_cause())
+    carregaPreferences();
+
   DEBUG_PRINT("Wake up cause: ");
   DEBUG_PRINTLN(esp_sleep_get_wakeup_cause());
+  DEBUG_PRINTLN(rtcSensorAddr);
 
   // DEBUG_PRINT("SSID: ");
   // DEBUG_PRINTLN(rtcSsid);
@@ -746,15 +671,18 @@ void setup() {
   //  4. Conecta WiFi
   //se falhar a conexão restarta
 
-  bool concta = conectaWiFi();
-  enviaDados();
-  dormir(false);
-  /*
+  // bool concta = conectaWiFi();
+  // enviaDados();
+  // dormir(false);
+  
   if (!conectaWiFi()) 
     dormir(true);
   // se falhar ao enviar dados restarta
-  dormir(enviaDados());
-  */
+  bool envio = enviaDados();
+  DEBUG_PRINT("Envio Return: ");
+  DEBUG_PRINTLN(envio);
+  dormir(!envio);
+  
   //digitalWrite(led, HIGH);
 
   // 5. DeepSleep - movido para ser chamado via enviaDados
