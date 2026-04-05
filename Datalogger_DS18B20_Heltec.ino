@@ -55,6 +55,7 @@
 #include <HT_SSD1306Wire.h>
 #include <Preferences.h>  //utilizada no lugar da EEPROM
 #include <LoRaWan_APP.h>
+#include <esp_bt.h>
 
 
 /* ========================================================================== */
@@ -81,7 +82,7 @@
 WebServer server(80);  // Cria o objeto 'server' na porta 80
 static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED);
 // addr , freq , i2c group , resolution , rst
-Preferences p;
+Preferences preferences;
 OneWire ds(oneWire_pin);  // GPIO2 pino 13 da placa
 
 /* ========================================================================== */
@@ -110,7 +111,7 @@ const String currentVersion = "1.0.4";
 const char* servidorOTA = "http://10.0.0.11/firmware/v2.bin";
 
 //para conexão com banco de dados
-const char http_site[] = "http://192.168.15.19:3001/v2/gravasensor"; //"http://10.0.0.11/php/gravabanco.php";
+const char http_site[] = "http://192.168.15.19:3001/v2/gravasensor";  //"http://10.0.0.11/php/gravabanco.php";
 const int http_port = 3001;
 
 const float fatorVoltagem = 1.003367;
@@ -121,15 +122,27 @@ const float fatorVoltagem = 1.003367;
 
 //String ssid = "";
 //String password = "";
-String enderecoFormatado;
+//String enderecoFormatado;
 float temp;
 float offSetDHT = 0.0;  //offSet do sensor DHT21
 float bateria = 0.0;
-byte addr[8];  //endereço do sensor DS18B20
-// Configuração de IP Fixo (Otimiza conexão WiFi)
-//IPAddress local_IP(192, 168, 15, 12);
-//IPAddress gateway(192, 168, 15, 1);
-//IPAddress subnet(255, 255, 255, 0);
+//byte addr[8];  //endereço do sensor DS18B20
+// RTC memory — rápido, volátil
+RTC_DATA_ATTR bool rtcWiFiValido = false;
+RTC_DATA_ATTR bool rtcIPValido = false;
+RTC_DATA_ATTR bool rtcWiFiCached = false;
+RTC_DATA_ATTR bool rtcSensorValido = false;
+RTC_DATA_ATTR char rtcSsid[32] = "";
+RTC_DATA_ATTR char rtcPassword[64] = "";
+RTC_DATA_ATTR uint32_t rtcIp;
+RTC_DATA_ATTR uint32_t rtcGateway;
+RTC_DATA_ATTR uint32_t rtcSubnet;
+//RTC_DATA_ATTR uint32_t rtcDns;
+RTC_DATA_ATTR uint8_t rtcBssid[6];
+RTC_DATA_ATTR int32_t rtcChannel;
+RTC_DATA_ATTR uint8_t rtcaddr[8];      // endereço DS18B20 HEX
+RTC_DATA_ATTR char rtcSensorAddr[17];  // endereço DS18B20 char
+
 /* ========================================================================== */
 
 /* ========================================================================== */
@@ -151,16 +164,23 @@ int enviaDados() {
   WiFiClient client;
 
   if (WiFi.status() == WL_CONNECTED) {
-
+    String dados_a_enviar = "{\"sensor\":\"286FC096F0013C67\", \"valor\":27.06, \"bateria\":3.72, \"version\":\"1.0.4\"}";
     //envia versão atual junto com os dados, para controle de versão do firmware
-    String dados_a_enviar = "{\"sensor\":\"" + enderecoFormatado + "\", \"valor\":" + String(temp) + 
-      ", \"bateria\":" + String(bateria) + ", \"version\":\"" + currentVersion + "\"}";
+    /*
+    String dados_a_enviar = "{\"sensor\":\"286FC096F0013C67\", \"valor\":" 
+                                  + String(temp) + ", \"bateria\":" 
+                                  + String(bateria) + ", \"version\":\"" 
+                                  + currentVersion + "\"}";
+                                  */
     //"sensor=" + String(dispositivo) + "&valor=" + String(temp);  //+ "&date=" + date;
-    DEBUG_PRINTLN(dados_a_enviar);
+    //DEBUG_PRINTLN(dados_a_enviar);
     http.begin(client, http_site);
+    //http.setTimeout(10000);                              // timeout 10s
     http.addHeader("Content-Type", "application/json");  // Definido para Json..
 
     int httpCode = http.POST(dados_a_enviar);
+
+    DEBUG_PRINTLN(httpCode);
 
     if (httpCode == 200) {
       String response = http.getString();
@@ -257,13 +277,13 @@ void handleConfig() {
     }
   }
 
-  p.begin("wifi-config", false);
-  p.putString("ssid", ssid);
-  p.putString("password", password);
-  p.putString("ip", ipStr);
-  p.putString("gateway", gwStr);
-  p.putString("subnet", subStr);
-  p.end();
+  preferences.begin("config", false);  //modo leitura e escrita
+  preferences.putString("ssid", ssid);
+  preferences.putString("password", password);
+  preferences.putString("ip", ipStr);
+  preferences.putString("gateway", gwStr);
+  preferences.putString("subnet", subStr);
+  preferences.end();
 
   server.send(200, "text/html", "<html><body><h1>Sucesso!</h1><p>Reiniciando o ESP32...</p></body></html>");
 
@@ -280,17 +300,85 @@ void accessPoint() {
 
   WiFi.mode(WIFI_AP);
   WiFi.softAP("ESP8266AP", "123456789");
-  //DEBUG_PRINTLN("Modo Access Point ativado.");
+  DEBUG_PRINTLN("Modo Access Point ativado.");
   server.on("/", HTTP_GET, handleRoot);           // Definindo a página inicial
   server.on("/config", HTTP_POST, handleConfig);  // Definindo a página de configuração
   server.begin();                                 // Iniciando o servidor
 }  //end acessPoint
 
-void conectaWiFi() {
+bool conectaWiFi() {
 
-  char htn[30];
-  sprintf(htn, "DatLog %S", DispositivoName);
+  //char htn[30];
+  //sprintf(htn, "DatLog %S", DispositivoName);
 
+  DEBUG_PRINT("rtcWiFiValido: ");
+  DEBUG_PRINTLN(rtcWiFiValido);
+  // verifica se já tem SSID cadastrado
+  if (!rtcWiFiValido) {
+    carregaPreferences();
+    DEBUG_PRINT("rtcWiFiValido2: ");
+    DEBUG_PRINTLN(rtcWiFiValido);
+    if (!rtcWiFiValido) {
+      accessPoint();
+      while (1) server.handleClient();
+    }
+  }
+
+  WiFi.mode(WIFI_STA);
+
+  if (!rtcIPValido) {
+    // RTC apagou (troca de bateria) — busca do Preferences
+    DEBUG_PRINTLN("Sem IP");
+    carregaPreferences();
+    WiFi.begin(rtcSsid, rtcPassword);
+  } else {
+    // Conexão rápida com dados da RTC
+    DEBUG_PRINTLN("IP Válido");
+    WiFi.config(
+      IPAddress(rtcIp),
+      IPAddress(rtcGateway),
+      IPAddress(rtcSubnet),
+      IPAddress(rtcGateway));
+    if (rtcWiFiCached) {
+      DEBUG_PRINTLN("WiFi Cahed");
+      WiFi.begin(rtcSsid, rtcPassword, rtcChannel, rtcBssid, true);
+      //WiFi.begin(rtcSsid, rtcPassword); //apagar isso
+    } else {
+      DEBUG_PRINTLN("WiFi primeira conexão");
+      WiFi.begin(rtcSsid, rtcPassword);
+    }
+  }
+
+  // DEBUG_PRINT("SSID: ");
+  // for (int i = 0; i < 32; i++){
+  //   Serial.print(rtcSsid[i], HEX);
+  //   Serial.print(" ");
+  // }
+
+  int tentativas = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100);
+    tentativas++;
+    //DEBUG_PRINT(".");
+    if (tentativas > 100) {
+      rtcWiFiCached = false;  // força novo carregamento no próximo ciclo
+      return false;
+    }
+  }
+  DEBUG_PRINT("Tentasivas WiFI: ");
+  DEBUG_PRINTLN(tentativas);
+  rtcChannel = WiFi.channel();
+  memcpy(rtcBssid, WiFi.BSSID(), 6);
+  rtcWiFiCached = true;
+  DEBUG_PRINT("Channel: ");
+  DEBUG_PRINTLN(rtcChannel);
+
+
+  //WiFi.hostname(htn);
+  return true;
+}
+
+/* substituido pelo RTC_DATA
   p.begin("wifi-config", true);
   //delay(50);
   String ssid = p.getString("ssid", "");
@@ -299,12 +387,6 @@ void conectaWiFi() {
   String s_gw = p.getString("gateway", "");
   String s_sub = p.getString("subnet", "");
   p.end();
-  /*
-  DEBUG_PRINT("Dados WiFi: ");
-  DEBUG_PRINT(ssid);
-  DEBUG_PRINT(" : ");
-  DEBUG_PRINTLN(password);
-  */
 
   if (ssid != "" && password != "") {
     int reinicio = 0;
@@ -344,8 +426,9 @@ void conectaWiFi() {
       server.handleClient();
 
     }
-    WiFi.hostname(htn);
-    /*
+    */
+
+/* - Versão 01
     // connect to WiFi using saved credentials
     //display.drawString(0, 50, "Conectando...");
     //display.display();
@@ -380,12 +463,14 @@ void conectaWiFi() {
     DEBUG_PRINTLN("IP address: ");
     DEBUG_PRINTLN(WiFi.localIP());
     */
+
+/*
   } else {
     // start Access Point mode
     accessPoint();
     server.handleClient();
-  }
-}
+  }*/
+
 
 void leSensor() {
   byte i;
@@ -395,43 +480,45 @@ void leSensor() {
 
   //p.begin("DS18B20", "false");  //inicializa preferences
 
-  p.begin("wifi-config", false);  //inicializa em modo leitura e escrita
-  p.getBytes("addr", addr, 8);
+  //preferences.getBytes("addr", addr, 8);
   //teste
 
-  if (addr[0] != 0x28) {
+  if (rtcaddr[0] != 0x28) {
 
-    if (!ds.search(addr)) {
+    if (!ds.search(rtcaddr)) {
       ds.reset_search();
       DEBUG_PRINTLN("Fim daleitura");
       delay(100);
       //return;
     }
     DEBUG_PRINTLN("Grava endereco");
-    p.putBytes("addr", addr, 8);
+    preferences.begin("config", false);  //inicializa em modo leitura e escrita
+    preferences.putBytes("addr", rtcaddr, 8);
+    preferences.end();
   }
 
-  if (OneWire::crc8(addr, 7) != addr[7]) {
+  if (OneWire::crc8(rtcaddr, 7) != rtcaddr[7]) {
     DEBUG_PRINTLN("CRC is not valid!");
     return;
   }
 
-  enderecoFormatado = addrParaString(addr);
-
+  //rtcSensorAddr = addrParaString(rtcaddr);
+  strlcpy(rtcSensorAddr, addrParaString(rtcaddr).c_str(), sizeof(rtcSensorAddr));
   //display.clear();
   //display.drawString(0, 10, enderecoFormatado);
   //display.display();
-  DEBUG_PRINTLN(enderecoFormatado);
+  DEBUG_PRINT("rtcSensorAddr: ");
+  DEBUG_PRINTLN(rtcSensorAddr);
 
   ds.reset();
-  ds.select(addr);
+  ds.select(rtcaddr);
   ds.write(0x44, 1);  // start conversion, with parasite power on at the end
 
   delay(1000);  // maybe 750ms is enough, maybe not
   // we might do a ds.depower() here, but the reset will take care of it.
 
   present = ds.reset();
-  ds.select(addr);
+  ds.select(rtcaddr);
   ds.write(0xBE);  // Read Scratchpad
 
   DEBUG_PRINT("  Data = ");
@@ -485,14 +572,14 @@ void leSensor() {
 }  //end le sensor
 
 String addrParaString(byte* sensorAddress) {
-  char enderecoHex[17]; // 16 chars + null terminator
+  char enderecoHex[17];  // 16 chars + null terminator
   snprintf(enderecoHex, sizeof(enderecoHex),
-    "%02X%02X%02X%02X%02X%02X%02X%02X",
-    sensorAddress[0], sensorAddress[1],
-    sensorAddress[2], sensorAddress[3],
-    sensorAddress[4], sensorAddress[5],
-    sensorAddress[6], sensorAddress[7]
-  );
+           "%02X%02X%02X%02X%02X%02X%02X%02X",
+           sensorAddress[0], sensorAddress[1],
+           sensorAddress[2], sensorAddress[3],
+           sensorAddress[4], sensorAddress[5],
+           sensorAddress[6], sensorAddress[7]);
+  //DEBUG_PRINTLN(enderecoHex);
   return enderecoHex;
 }  //end addrParaString
 
@@ -521,15 +608,95 @@ float lerVoltagemBateria() {
   return voltagem;
 }
 
-void dormir() {
-  display.drawString(0, 0, String(millis()));
+void carregaPreferences() {
+  //Salva o conteúde de Preferences em RTC_DATA
+  DEBUG_PRINTLN("Carrega Preferences");
+
+  preferences.begin("config", true);  // true = somente leitura
+  String ssid = preferences.getString("ssid", "");
+  String password = preferences.getString("password", "");
+  String ip = preferences.getString("ip", "");
+  String gw = preferences.getString("gateway", "");
+  String sn = preferences.getString("subnet", "");
+  //String dns        = preferences.getString("dns", "");
+  String sensorAddr = preferences.getString("sensorAddr", "");
+  preferences.getBytes("addr", rtcaddr, 8);
+  preferences.end();
+
+  // DEBUG_PRINT("SSID: ");
+  // for (int i = 0; i < ssid.length(); i++) {
+  //   Serial.print(ssid[i], HEX);
+  //   Serial.print(" ");
+  // }
+  // DEBUG_PRINTLN(" .");
+
+  // Copia para RTC
+  DEBUG_PRINTLN("dados carregados internet: ");
+  DEBUG_PRINTLN(ip);
+  DEBUG_PRINTLN(gw);
+  DEBUG_PRINTLN(sn);
+
+  if (ssid != "" || password != "") {
+    strlcpy(rtcSsid, ssid.c_str(), sizeof(rtcSsid));
+    strlcpy(rtcPassword, password.c_str(), sizeof(rtcPassword));
+    rtcWiFiValido = true;
+  }
+  if (ip != "" || gw != "") {
+    IPAddress ipObj, gwObj, snObj, dnsObj;
+
+    ipObj.fromString(ip);
+    gwObj.fromString(gw);
+    snObj.fromString(sn);
+    //dnsObj.fromString(dns);
+
+    rtcIp      = (uint32_t)ipObj;
+    rtcGateway = (uint32_t)gwObj;
+    rtcSubnet  = (uint32_t)snObj;
+    //rtcDns     = (uint32_t)dnsObj;
+    //rtcDns          = (uint32_t)IPAddress().fromString(dns);
+    rtcIPValido = true;
+  }
+  //strlcpy(rtcSensorAddr, sensorAddr.c_str(), sizeof(rtcSensorAddr));
+  if (rtcaddr[0] == 0x28) {
+    //rtcaddr           = addr;
+    sensorAddr = addrParaString(rtcaddr);
+    strlcpy(rtcSensorAddr, sensorAddr.c_str(), sizeof(sensorAddr));
+    rtcSensorValido = true;
+  }
+}  //End CarregaPreferences
+
+/* verificar pois a logica deve estar em cada ponto de salvamento de preferences
+void salvaPreferences(String ssid, String senha) {
+    // Chamado apenas uma vez no primeiro boot ou ao reconfigurar
+    preferences.begin("config", false);
+    
+    preferences.putString("ssid",       ssid);
+    preferences.putString("senha",      senha);
+    preferences.putString("ip",         WiFi.localIP().toString());
+    preferences.putString("gateway",    WiFi.gatewayIP().toString());
+    preferences.putString("subnet",     WiFi.subnetMask().toString());
+    preferences.putString("dns",        WiFi.dnsIP().toString());
+    preferences.putString("sensorAddr", rtcSensorAddr);
+    
+    preferences.end();
+}
+*/
+
+void dormir(bool falha) {
+  uint32_t tempo = millis();
+  display.drawString(0, 0, String(tempo));
+  if (falha) display.drawString(20, 0, "---FALHOU---");
   display.display();
   delay(600);
 
-  DEBUG_PRINTLN(millis());
+  DEBUG_PRINTLN(tempo);
   //digitalWrite(Vext, HIGH);   //Desliga o pino VEX
   Serial.flush();
-  uint32_t tempSleep = (millis() / 1000) < TIME_TO_SLEEP ? TIME_TO_SLEEP - (millis() / 1000) : TIME_TO_SLEEP;
+  if (falha) {
+    DEBUG_PRINTLN("falhou - Resetando");
+    ESP.restart();
+  }
+  uint32_t tempSleep = (tempo / 1000) < TIME_TO_SLEEP ? TIME_TO_SLEEP - (tempo / 1000) : TIME_TO_SLEEP;
   esp_sleep_enable_timer_wakeup(tempSleep * uS_TO_S_FACTOR);
   esp_deep_sleep_start();
 }
@@ -547,6 +714,10 @@ void setup() {
   //Radio.Init();
   Radio.Sleep();
 
+  //desliga o bluetooth
+  //btStop();
+  //esp_bt_controller_disable();
+
   // Open serial communications and wait for port to open:
   DEBUG_BEGIN(115200);
   display.init();
@@ -554,12 +725,15 @@ void setup() {
   //display.display();
   display.setContrast(122);
 
+  DEBUG_PRINT("Wake up cause: ");
   DEBUG_PRINTLN(esp_sleep_get_wakeup_cause());
 
+  // DEBUG_PRINT("SSID: ");
+  // DEBUG_PRINTLN(rtcSsid);
   // 2. Leitura do sensor
-  digitalWrite(led, LOW);
-  leSensor();
   digitalWrite(led, HIGH);
+  leSensor();
+  digitalWrite(led, LOW);
 
   // 3. Le bateria
   bateria = lerVoltagemBateria();
@@ -570,9 +744,17 @@ void setup() {
   DEBUG_PRINTLN(bateria);
 
   //  4. Conecta WiFi
-  conectaWiFi();
-  if (enviaDados())
-    dormir();
+  //se falhar a conexão restarta
+
+  bool concta = conectaWiFi();
+  enviaDados();
+  dormir(false);
+  /*
+  if (!conectaWiFi()) 
+    dormir(true);
+  // se falhar ao enviar dados restarta
+  dormir(enviaDados());
+  */
   //digitalWrite(led, HIGH);
 
   // 5. DeepSleep - movido para ser chamado via enviaDados
@@ -582,21 +764,4 @@ void setup() {
 void loop() {
   server.handleClient();
   delay(10);
-  /*
-  if (WiFi.status() == WL_CONNECTED) {
-    //verificar para eliminar ou inibir
-    display.clear();
-    display.drawString(0, 10, "  Conectado");
-    display.display();
-
-  } else {
-    // Se não estiver conectado à rede Wi-Fi, lidando com as requisições do cliente
-    display.drawString(0, 40, "Desconectado");
-    display.display();
-    //accessPoint();
-    server.handleClient();
-  }
-  //leSensor();
-  delay(10);
-  */
 }
