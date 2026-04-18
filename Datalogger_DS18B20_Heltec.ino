@@ -10,7 +10,7 @@
     
 
     Placa Heltec Wifi Lora 32 V3.2
-    processador ESP32
+    processador ESP32 Lib. V. 3.3.7
 
     Etapas:
     1. testar sensor DS18B20            ok
@@ -44,18 +44,20 @@
 #define GPIO_IS_VALID_GPIO(pin) ((pin) >= 0 && (pin) <= 48)
 #endif
 //#include <ArduinoOTA.h>
-#include <OneWire.h>  //sensor DS18B20
+#include <OneWire.h>            //v. 2.3.8 - sensor DS18B20
 #include <Arduino.h>
-#include <WiFi.h>
-#include <HTTPUpdate.h>  //lib troca de OTA para atualizar o firmware via HTTP
+#include "Adafruit_SHT4x.h"     //sensor SHT41 
+#include <WiFi.h>         
+#include <HTTPUpdate.h>         //lib troca de OTA para atualizar o firmware via HTTP
 #include <WebServer.h>
 #include <HTTPClient.h>
-#include <ArduinoJson.h>
+#include <ArduinoJson.h>        //v. 7.4.3
 #include <Wire.h>
-#include <HT_SSD1306Wire.h>
-#include <Preferences.h>  //utilizada no lugar da EEPROM
-#include <LoRaWan_APP.h>
+#include <HT_SSD1306Wire.h>     // Heltec ESP32 2.1.5 Heltec_ESP_Lora_V3 0.9.2
+#include <Preferences.h>        //utilizada no lugar da EEPROM
+#include <LoRaWan_APP.h>        //V 1.2.0
 #include <esp_bt.h>
+//#include "heltec.h"
 
 
 /* ========================================================================== */
@@ -64,7 +66,7 @@
 /* --------------------------------Mapeamento Hardware----------------------- */
 
 #define led 35  //GPIO ?
-#define oneWire_pin 2
+#define oneWire_pin 2    // antes era 2
 
 #define BAT_ADC_PIN 1    // Pino de leitura (ADC)
 #define VEXT_CONTROL 37  // Pino que ativa o divisor resistivo e periféricos
@@ -72,36 +74,39 @@
 // Configurações de Tempo (15 minutos = 15 * 60 * 10^6 microssegundos)
 #define uS_TO_S_FACTOR 1000000ULL
 #define TIME_TO_SLEEP 30  //900 = 15min
+//TwoWire I2C_0 = TwoWire(0);   // Define barramento Display I2C(0)
+TwoWire I2C_1 = TwoWire(1);   // Define barramento sensor  I2C(1)
 
 /* ========================================================================== */
 
 /* ========================================================================== */
 /* ------------------------- Instanciando objetos --------------------------- */
 
-//WiFiClient client;             //para conecção com banco de dados
-WebServer server(80);  // Cria o objeto 'server' na porta 80
+//WiFiClient client;                        //para conecção com banco de dados
+WebServer server(80);                       // Cria o objeto 'server' na porta 80
 static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED);
-// addr , freq , i2c group , resolution , rst
+                                            // addr , freq , i2c group , resolution , rst
 Preferences preferences;
-OneWire ds(oneWire_pin);  // GPIO2 pino 13 da placa
+OneWire ds(oneWire_pin);                    // GPIO2 pino 13 da placa
+Adafruit_SHT4x sht4 = Adafruit_SHT4x();     // GPIO41 SDA - GPIO42 SCL
 
 /* ========================================================================== */
 
 /* ========================================================================== */
 /* -------------------------- Macros e Constantes --------------------------- */
 
-//#define DEBUG true  //Comentar para não imprimir serial
+#define DEBUG true  //Comentar para não imprimir serial
 
 #ifdef DEBUG
-#define DEBUG_PRINT(x) Serial.print(x)
-#define DEBUG_PRINT2(x, y) Serial.print(x, y)
-#define DEBUG_PRINTLN(x) Serial.println(x)
-#define DEBUG_BEGIN(x) Serial.begin(x)
+  #define DEBUG_PRINT(x)      Serial.print(x)
+  #define DEBUG_PRINT2(x, y)  Serial.print(x, y)
+  #define DEBUG_PRINTLN(x)    Serial.println(x)
+  #define DEBUG_BEGIN(x)      Serial.begin(x)
 #else
-#define DEBUG_PRINT(x)
-#define DEBUG_PRINT2(x, y)
-#define DEBUG_PRINTLN(x)
-#define DEBUG_BEGIN(x)
+  #define DEBUG_PRINT(x)
+  #define DEBUG_PRINT2(x, y)
+  #define DEBUG_PRINTLN(x)
+  #define DEBUG_BEGIN(x)
 #endif
 
 //#define EEPROM_SIZE 64
@@ -123,7 +128,7 @@ const float fatorVoltagem = 1.003367;
 //String ssid = "";
 //String password = "";
 //String enderecoFormatado;
-float temp;
+float temp; 
 float offSetDHT = 0.0;  //offSet do sensor DHT21
 float bateria = 0.0;
 //byte addr[8];  //endereço do sensor DS18B20
@@ -142,6 +147,7 @@ RTC_DATA_ATTR uint8_t rtcBssid[6];
 RTC_DATA_ATTR int32_t rtcChannel;
 RTC_DATA_ATTR uint8_t rtcaddr[8];      // endereço DS18B20 HEX
 RTC_DATA_ATTR char rtcSensorAddr[17];  // endereço DS18B20 char
+RTC_DATA_ATTR char rtcSHT41Addr[11];  // endereço DS18B20 char
 RTC_DATA_ATTR uint8_t rtcQtFalha = 0;
 
 /* ========================================================================== */
@@ -175,6 +181,7 @@ bool enviaDados() {
                                   
     //"sensor=" + String(dispositivo) + "&valor=" + String(temp);  //+ "&date=" + date;
     DEBUG_PRINTLN(dados_a_enviar);
+    delay(10);  //tentativa de estabilizar baixa energia
     http.begin(client, http_site);
     //http.setTimeout(10000);                              // timeout 10s
     http.addHeader("Content-Type", "application/json");  // Definido para Json..
@@ -467,12 +474,51 @@ void leSensor() {
   display.setTextAlignment(TEXT_ALIGN_CENTER);
   char bfTemp[20];
   sprintf(bfTemp, "%.2f °C", temp);
-  display.drawString(64, 30, bfTemp);
-  display.display();
+  display.drawString(64, 25, bfTemp);
+  //display.display(); não mostra agora
   //delay(1000);
   display.setFont(ArialMT_Plain_10);
   display.setTextAlignment(TEXT_ALIGN_LEFT);
 }  //end le sensor
+
+void leSHT4x(){
+  sensors_event_t tempSHT, humidity;
+  I2C_1.begin(41, 42);
+  if (! sht4.begin(&I2C_1)) {
+    DEBUG_PRINTLN("Erro ao iniciar SHT4x");
+  }
+  //Serial.println(sht4.readSerial(), HEX);
+  uint32_t addrSHT = sht4.readSerial();
+  snprintf(rtcSHT41Addr, sizeof(rtcSHT41Addr), "%08lX", addrSHT);
+  DEBUG_PRINTLN(rtcSHT41Addr);
+
+  sht4.setPrecision(SHT4X_HIGH_PRECISION);
+  sht4.setHeater(SHT4X_NO_HEATER);
+  sht4.getEvent(&humidity, &tempSHT);      // popula temperatura e humidade
+
+  float tempSHTf = tempSHT.temperature;
+  Serial.print(tempSHT.temperature);
+  DEBUG_PRINT("  Temperature SHT = ");
+  DEBUG_PRINT(tempSHTf);
+  DEBUG_PRINT(" Celsius, | ");
+  DEBUG_PRINT(" Humidade SHT = ");
+  DEBUG_PRINT(humidity.relative_humidity);
+  DEBUG_PRINTLN(" %, ");
+
+
+
+  display.setFont(ArialMT_Plain_10);
+
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  char bfTemp[20];
+  sprintf(bfTemp, "%.2f °C %.2f %", tempSHTf, humidity.relative_humidity);
+  display.drawString(64, 42, bfTemp);
+  //display.display(); não mostra agora
+  //delay(1000);
+  display.setFont(ArialMT_Plain_10);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+
+} //end leSTH4x
 
 String addrParaString(byte* sensorAddress) {
   char enderecoHex[17];  // 16 chars + null terminator
@@ -490,7 +536,7 @@ float lerVoltagemBateria() {
   // 1. Ativa o Vext (Na V3, LOW ativa o regulador de periféricos/divisor)
   pinMode(VEXT_CONTROL, OUTPUT);
   digitalWrite(VEXT_CONTROL, HIGH);
-  delay(10);  // Pequena pausa para estabilizar a tensão
+  delay(100);  // Pequena pausa para estabilizar a tensão
 
   // 2. Configura a atenuação para ler até ~3.9V ou mais
   // O ESP32-S3 tem um ADC que precisa de calibração para precisão real
@@ -657,7 +703,8 @@ void setup() {
   // DEBUG_PRINTLN(rtcSsid);
   // 2. Leitura do sensor
   digitalWrite(led, HIGH);
-  leSensor();
+  leSensor();               //le sensor DS18B20
+  leSHT4x();                //le Sensor SHT41
   digitalWrite(led, LOW);
 
   // 3. Le bateria
