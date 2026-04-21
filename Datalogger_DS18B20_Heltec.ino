@@ -128,7 +128,7 @@ const float fatorVoltagem = 1.003367;
 //String ssid = "";
 //String password = "";
 //String enderecoFormatado;
-float temp; 
+float temp, tempSHT, humi; 
 float offSetDHT = 0.0;  //offSet do sensor DHT21
 float bateria = 0.0;
 //byte addr[8];  //endereço do sensor DS18B20
@@ -173,12 +173,21 @@ bool enviaDados() {
   if (WiFi.status() == WL_CONNECTED) {
     //String dados_a_enviar = "{\"sensor\":\"286FC096F0013C67\", \"valor\":27.06, \"bateria\":3.72, \"version\":\"1.0.4\"}";
     //envia versão atual junto com os dados, para controle de versão do firmware
-    
-    String dados_a_enviar = "{\"sensor\":\""+ String(rtcSensorAddr) +
-                              "\", \"valor\":" + String(temp) + 
+    String ssensor = "{\"sensor\": \"";
+    String svalor  = "\", \"valor\": ";
+    //if (rtcSensorAddr != "")
+    String sSensor18 = rtcSensorAddr != "" ? 
+        ", " + ssensor + String(rtcSensorAddr) + svalor + String(temp) + "} ]" :
+        "} ]";
+      //else
+    String dados_a_enviar = "{\"sensores\": ["+ 
+                              ssensor + "01" + String(rtcSHT41Addr) +
+                              svalor  + String(tempSHT) + "}, " +
+                              ssensor + "02" + String(rtcSHT41Addr) + 
+                              svalor  + String(humi)    + "} " +
+                              sSensor18 +
                               ", \"bateria\":" + String(bateria) + 
-                              ", \"version\":\"" + currentVersion + "\"}";
-                                  
+                              ", \"version\":\"" + currentVersion + "\"}";                              
     //"sensor=" + String(dispositivo) + "&valor=" + String(temp);  //+ "&date=" + date;
     DEBUG_PRINTLN(dados_a_enviar);
     delay(10);  //tentativa de estabilizar baixa energia
@@ -482,7 +491,7 @@ void leSensor() {
 }  //end le sensor
 
 void leSHT4x(){
-  sensors_event_t tempSHT, humidity;
+  sensors_event_t tempSHTevent, humidity;
   I2C_1.begin(41, 42);
   if (! sht4.begin(&I2C_1)) {
     DEBUG_PRINTLN("Erro ao iniciar SHT4x");
@@ -494,15 +503,16 @@ void leSHT4x(){
 
   sht4.setPrecision(SHT4X_HIGH_PRECISION);
   sht4.setHeater(SHT4X_NO_HEATER);
-  sht4.getEvent(&humidity, &tempSHT);      // popula temperatura e humidade
+  sht4.getEvent(&humidity, &tempSHTevent);      // popula temperatura e humidade
 
-  float tempSHTf = tempSHT.temperature;
-  Serial.print(tempSHT.temperature);
+  tempSHT = tempSHTevent.temperature;
+  humi = humidity.relative_humidity;
+  Serial.print(tempSHT);
   DEBUG_PRINT("  Temperature SHT = ");
-  DEBUG_PRINT(tempSHTf);
+  DEBUG_PRINT(tempSHT);
   DEBUG_PRINT(" Celsius, | ");
   DEBUG_PRINT(" Humidade SHT = ");
-  DEBUG_PRINT(humidity.relative_humidity);
+  DEBUG_PRINT(humi);
   DEBUG_PRINTLN(" %, ");
 
 
@@ -511,7 +521,7 @@ void leSHT4x(){
 
   display.setTextAlignment(TEXT_ALIGN_CENTER);
   char bfTemp[20];
-  sprintf(bfTemp, "%.2f °C %.2f %", tempSHTf, humidity.relative_humidity);
+  sprintf(bfTemp, "%.2f °C %.2f %", tempSHT, humi);
   display.drawString(64, 42, bfTemp);
   //display.display(); não mostra agora
   //delay(1000);
