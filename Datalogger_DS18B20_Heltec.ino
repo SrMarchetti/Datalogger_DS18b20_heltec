@@ -45,6 +45,7 @@
 #endif
 //#include <ArduinoOTA.h>
 #include <OneWire.h>            //v. 2.3.8 - sensor DS18B20
+#include <DallasTemperature.h>  //Sensor DS18B20
 #include <Arduino.h>
 #include "Adafruit_SHT4x.h"     //sensor SHT41 
 #include <WiFi.h>         
@@ -73,7 +74,7 @@
 //#define ds18b20 GPIO 45  //pino 6 lado esquerdo
 // Configurações de Tempo (15 minutos = 15 * 60 * 10^6 microssegundos)
 #define uS_TO_S_FACTOR 1000000ULL
-#define TIME_TO_SLEEP 30  //900 = 15min
+#define TIME_TO_SLEEP 900  //900 = 15min
 //TwoWire I2C_0 = TwoWire(0);   // Define barramento Display I2C(0)
 TwoWire I2C_1 = TwoWire(1);   // Define barramento sensor  I2C(1)
 
@@ -88,6 +89,8 @@ static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RS
                                             // addr , freq , i2c group , resolution , rst
 Preferences preferences;
 OneWire ds(oneWire_pin);                    // GPIO2 pino 13 da placa
+DallasTemperature sensorsDS(&ds);           // usando biblioteca Dallas
+//DeviceAddress insideThermometer;            // arrays to hold device address
 Adafruit_SHT4x sht4 = Adafruit_SHT4x();     // GPIO41 SDA - GPIO42 SCL
 
 /* ========================================================================== */
@@ -116,7 +119,7 @@ const String currentVersion = "1.0.4";
 const char* servidorOTA = "http://10.0.0.11/firmware/v2.bin";
 
 //para conexão com banco de dados
-const char http_site[] = "http://192.168.15.19:3001/v2/gravasensor";  //"http://10.0.0.11/php/gravabanco.php";
+const char http_site[] = "http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/php/gravabanco.php";
 const int http_port = 3001;
 
 const float fatorVoltagem = 1.003367;
@@ -131,6 +134,7 @@ const float fatorVoltagem = 1.003367;
 float temp, tempSHT, humi; 
 float offSetDHT = 0.0;  //offSet do sensor DHT21
 float bateria = 0.0;
+uint8_t ds18Present;
 //byte addr[8];  //endereço do sensor DS18B20
 // RTC memory — rápido, volátil
 RTC_DATA_ATTR bool rtcWiFiValido = false;
@@ -175,10 +179,13 @@ bool enviaDados() {
     //envia versão atual junto com os dados, para controle de versão do firmware
     String ssensor = "{\"sensor\": \"";
     String svalor  = "\", \"valor\": ";
+    String mac = WiFi.macAddress();
+    //DEBUG_PRINTLN(mac);
+    mac.replace(":","");
     //if (rtcSensorAddr != "")
-    String sSensor18 = rtcSensorAddr != "" ? 
+    String sSensor18 = ds18Present ? 
         ", " + ssensor + String(rtcSensorAddr) + svalor + String(temp) + "} ]" :
-        "} ]";
+        " ]";
       //else
     String dados_a_enviar = "{\"sensores\": ["+ 
                               ssensor + "01" + String(rtcSHT41Addr) +
@@ -186,15 +193,17 @@ bool enviaDados() {
                               ssensor + "02" + String(rtcSHT41Addr) + 
                               svalor  + String(humi)    + "} " +
                               sSensor18 +
+                              ", \"mac\":\"" + mac + "\""
                               ", \"bateria\":" + String(bateria) + 
                               ", \"version\":\"" + currentVersion + "\"}";                              
     //"sensor=" + String(dispositivo) + "&valor=" + String(temp);  //+ "&date=" + date;
     DEBUG_PRINTLN(dados_a_enviar);
-    delay(10);  //tentativa de estabilizar baixa energia
+    delay(40);  //tentativa de estabilizar baixa energia
     http.begin(client, http_site);
     //http.setTimeout(10000);                              // timeout 10s
     http.addHeader("Content-Type", "application/json");  // Definido para Json..
 
+    delay(40);  //tentativa de estabilizar WiFi
     int httpCode = http.POST(dados_a_enviar);
 
     DEBUG_PRINTLN(httpCode);
@@ -401,7 +410,29 @@ void leSensor() {
   byte present = 0;
   byte type_s;
   byte data[9];
+  sensorsDS.begin();
+  
+  ds18Present = sensorsDS.getDeviceCount();
+  DEBUG_PRINTLN(ds18Present);
+  if(!sensorsDS.getAddress(rtcaddr, 0)){
+        DEBUG_PRINTLN("não encontrou sensor!");
+        strlcpy(rtcSensorAddr, "", sizeof(rtcSensorAddr));
+        return;
+  }
+  
 
+  if(rtcSensorAddr == ""){  
+    preferences.begin("config", false);  //inicializa em modo leitura e escrita
+    preferences.putBytes("addr", rtcaddr, 8);
+    strlcpy(rtcSensorAddr, addrParaString(rtcaddr).c_str(), sizeof(rtcSensorAddr));
+    preferences.end();
+  }
+
+  sensorsDS.requestTemperatures();            // Send the command to get temperatures
+  delay(1000);
+  temp = sensorsDS.getTempC(rtcaddr);
+
+  /*
   if (rtcaddr[0] != 0x28) {
 
     if (!ds.search(rtcaddr)) {
@@ -411,16 +442,15 @@ void leSensor() {
       //return;
     }
     DEBUG_PRINTLN("Grava endereco");
-    preferences.begin("config", false);  //inicializa em modo leitura e escrita
-    preferences.putBytes("addr", rtcaddr, 8);
-    preferences.end();
   }
+  
 
   if (OneWire::crc8(rtcaddr, 7) != rtcaddr[7]) {
     DEBUG_PRINTLN("CRC is not valid!");
     return;
   }
 
+  */
   //rtcSensorAddr = addrParaString(rtcaddr);
   //strlcpy(rtcSensorAddr, addrParaString(rtcaddr).c_str(), sizeof(rtcSensorAddr));
   //display.clear();
@@ -428,7 +458,7 @@ void leSensor() {
   //display.display();
   //DEBUG_PRINT("rtcSensorAddr: ");
   //DEBUG_PRINTLN(rtcSensorAddr);
-
+  /*
   ds.reset();
   ds.select(rtcaddr);
   ds.write(0x44, 1);  // start conversion, with parasite power on at the end
@@ -440,6 +470,7 @@ void leSensor() {
   ds.select(rtcaddr);
   ds.write(0xBE);  // Read Scratchpad
 
+  
   DEBUG_PRINT("  Data = ");
   DEBUG_PRINT2(present, HEX);
   DEBUG_PRINT(" ");
@@ -453,7 +484,7 @@ void leSensor() {
   DEBUG_PRINT(" CRC=");
   DEBUG_PRINT2(OneWire::crc8(data, 8), HEX);
   DEBUG_PRINTLN();
-
+  
   // Convert the data to actual temperature
   // because the result is a 16 bit signed integer, it should
   // be stored to an "int16_t" type, which is always 16 bits
@@ -473,8 +504,8 @@ void leSensor() {
     else if (cfg == 0x40) raw = raw & ~1;  // 11 bit res, 375 ms
     //// default is 12 bit resolution, 750 ms conversion time
   }
-
-  temp = (float)raw / 16.0;
+  */
+  //temp = (float)raw / 16.0;
   DEBUG_PRINT("  Temperature = ");
   DEBUG_PRINT(temp);
   DEBUG_PRINTLN(" Celsius, ");
