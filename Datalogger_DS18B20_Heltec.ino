@@ -10,7 +10,7 @@
     
 
     Placa Heltec Wifi Lora 32 V3.2
-    processador ESP32 Lib. V. 3.3.7
+    processador ESP32 Lib. V. 2.0.18
 
     Etapas:
     1. testar sensor DS18B20            ok
@@ -43,7 +43,7 @@
 #ifndef GPIO_IS_VALID_GPIO
 #define GPIO_IS_VALID_GPIO(pin) ((pin) >= 0 && (pin) <= 48)
 #endif
-//#include <ArduinoOTA.h>
+#include <ArduinoOTA.h>
 #include "OneWire.h"            //v. 2.3.8 - sensor DS18B20
 #include <DallasTemperature.h>  //Sensor DS18B20
 #include <Arduino.h>
@@ -153,6 +153,8 @@ RTC_DATA_ATTR uint8_t rtcaddr[8];      // endereço DS18B20 HEX
 RTC_DATA_ATTR char rtcSensorAddr[17];  // endereço DS18B20 char
 RTC_DATA_ATTR char rtcSHT41Addr[11];  // endereço DS18B20 char
 RTC_DATA_ATTR uint8_t rtcQtFalha = 0;
+
+
 
 /* ========================================================================== */
 
@@ -662,6 +664,7 @@ void dormir(bool falha) {
   uint32_t tempo = millis()+800;
   
   display.drawString(0, 0, String(tempo));
+  DEBUG_PRINTLN("entrou em dormir, tempo: ");
   DEBUG_PRINTLN(tempo);
 
   if (falha) {
@@ -718,6 +721,7 @@ void setup() {
   delay(10);
   // 1. Inicializa o rádio LoRa apenas para colocá-lo em Deep Sleep
   // Isso é essencial na Heltec V3 para cortar o consumo do SX1262
+  //Mcu.begin(HELTEC_BOARD,SLOW_CLK_TPYE);
   //Radio.Init();
   Radio.Sleep();
 
