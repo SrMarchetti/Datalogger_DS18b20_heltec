@@ -43,7 +43,12 @@
 #ifndef GPIO_IS_VALID_GPIO
 #define GPIO_IS_VALID_GPIO(pin) ((pin) >= 0 && (pin) <= 48)
 #endif
+<<<<<<< HEAD
 #include <ArduinoOTA.h>
+=======
+//#include <ArduinoOTA.h>
+//#include "esp32-hal-gpio.h"     //
+>>>>>>> ef97fca45ef616a801f9db1d99d06ef1ced8a112
 #include "OneWire.h"            //v. 2.3.8 - sensor DS18B20
 #include <DallasTemperature.h>  //Sensor DS18B20
 #include <Arduino.h>
