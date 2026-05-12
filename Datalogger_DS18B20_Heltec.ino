@@ -43,16 +43,15 @@
 #ifndef GPIO_IS_VALID_GPIO
 #define GPIO_IS_VALID_GPIO(pin) ((pin) >= 0 && (pin) <= 48)
 #endif
-<<<<<<< HEAD
-#include <ArduinoOTA.h>
-=======
+
 //#include <ArduinoOTA.h>
 //#include "esp32-hal-gpio.h"     //
->>>>>>> ef97fca45ef616a801f9db1d99d06ef1ced8a112
-#include "OneWire.h"            //v. 2.3.8 - sensor DS18B20
+
+#include <OneWire.h>            //v. 2.3.8 - sensor DS18B20
 #include <DallasTemperature.h>  //Sensor DS18B20
-#include <Arduino.h>
-#include "Adafruit_SHT4x.h"     //sensor SHT41 
+//#include <Arduino.h>
+//#include <Adafruit_SHT4x.h>     //sensor SHT41 
+#include <Adafruit_SHT4x.h>     //sensor SHT41 
 #include <WiFi.h>         
 #include <HTTPUpdate.h>         //lib troca de OTA para atualizar o firmware via HTTP
 #include <WebServer.h>
@@ -124,8 +123,8 @@ const String currentVersion = "1.0.4";
 const char* servidorOTA = "http://10.0.0.11/firmware/v2.bin";
 
 //para conexão com banco de dados
-const char http_site[] = "http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/php/gravabanco.php";
-const int http_port = 3001;
+const char http_site[] = "http://10.0.0.11/api/v2/gravasensor";  //"http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/php/gravabanco.php";
+//const int http_port = 3001;
 
 const float fatorVoltagem = 1.003367;
 /* ========================================================================== */
@@ -432,6 +431,7 @@ void leSensor() {
     preferences.begin("config", false);  //inicializa em modo leitura e escrita
     preferences.putBytes("addr", rtcaddr, 8);
     strlcpy(rtcSensorAddr, addrParaString(rtcaddr).c_str(), sizeof(rtcSensorAddr));
+    DEBUG_PRINTLN("gravou preferences rtcSensor Addr DS18b20");
     preferences.end();
   }
 
@@ -463,8 +463,9 @@ void leSensor() {
   //display.clear();
   //display.drawString(0, 10, enderecoFormatado);
   //display.display();
-  //DEBUG_PRINT("rtcSensorAddr: ");
-  //DEBUG_PRINTLN(rtcSensorAddr);
+  strlcpy(rtcSensorAddr, addrParaString(rtcaddr).c_str(), sizeof(rtcSensorAddr));
+  DEBUG_PRINT("rtcSensorAddr: ");
+  DEBUG_PRINTLN(rtcSensorAddr);
   /*
   ds.reset();
   ds.select(rtcaddr);
