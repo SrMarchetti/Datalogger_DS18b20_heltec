@@ -70,15 +70,17 @@
 /* ========================================================================== */
 /* --------------------------------Mapeamento Hardware----------------------- */
 
-#define led 35  //GPIO ?
-#define oneWire_pin 2    // antes era 2
+#define led           35  //GPIO ?
+#define ButtonPin      0  //Pino do botão interno
+#define oneWire_pin    2  // antes era 2
 
-#define BAT_ADC_PIN 1    // Pino de leitura (ADC)
-#define VEXT_CONTROL 37  // Pino que ativa o divisor resistivo e periféricos
-//#define ds18b20 GPIO 45  //pino 6 lado esquerdo
+#define BAT_ADC_PIN    1  // Pino de leitura (ADC)
+#define VEXT_CONTROL  37  // Pino que ativa o divisor resistivo e periféricos
+//#define ds18b20 GPIO 45 //pino 6 lado esquerdo
 // Configurações de Tempo (15 minutos = 15 * 60 * 10^6 microssegundos)
-#define uS_TO_S_FACTOR 1000000ULL
-#define TIME_TO_SLEEP 900  //900 = 15min
+#define uS_TO_S_FACTOR   1000000ULL
+#define TIME_TO_SLEEP    900  //900 = 15min
+#define TIME_TO_BATTERY  3600 //1 hora
 //TwoWire I2C_0 = TwoWire(0);   // Define barramento Display I2C(0)
 TwoWire I2C_1 = TwoWire(1);   // Define barramento sensor  I2C(1)
 
@@ -116,17 +118,21 @@ Adafruit_SHT4x sht4 = Adafruit_SHT4x();     // GPIO41 SDA - GPIO42 SCL
   #define DEBUG_BEGIN(x)
 #endif
 
+#define LONG_PRESS_TIME 600
+#define DEBOUNCE_TIME 50
 //#define EEPROM_SIZE 64
 //#define EEPROM_SSID_OFFSET 0
 //#define EEPROM_PASSWORD_OFFSET 32
-const String currentVersion = "1.0.4";
+const String currentVersion = "1.0.5";
 const char* servidorOTA = "http://10.0.0.11/firmware/v2.bin";
 
 //para conexão com banco de dados
 const char http_site[] = "http://10.0.0.11/api/v2/gravasensor";  //"http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/php/gravabanco.php";
 //const int http_port = 3001;
 
-const float fatorVoltagem = 1.003367;
+//const float fatorVoltagem = 1.003367;
+const float fatorVoltagem = 1.00;   //fator de ajuste da voltagem da bateria manter 1.00 para ficar sem ajuste
+
 /* ========================================================================== */
 
 /* ========================================================================== */
@@ -137,6 +143,7 @@ const float fatorVoltagem = 1.003367;
 //String enderecoFormatado;
 float temp, tempSHT, humi; 
 float offSetDHT = 0.0;  //offSet do sensor DHT21
+//float offSetDS18 = 0.0;  //offSet do sensor DS18B20
 float bateria = 0.0;
 uint8_t ds18Present;
 //byte addr[8];  //endereço do sensor DS18B20
@@ -157,7 +164,28 @@ RTC_DATA_ATTR uint8_t rtcaddr[8];      // endereço DS18B20 HEX
 RTC_DATA_ATTR char rtcSensorAddr[17];  // endereço DS18B20 char
 RTC_DATA_ATTR char rtcSHT41Addr[11];  // endereço DS18B20 char
 RTC_DATA_ATTR uint8_t rtcQtFalha = 0;
+RTC_DATA_ATTR float rtcOffSetDS18 = 0.0; //offset Sensor DS18B20
 
+// -------------------- Construção do menu --------------------------
+// ---- Estado de navegação geral ----
+enum Tela { MENU_PRINCIPAL, TELA_OFFSET };
+Tela telaAtual = MENU_PRINCIPAL;
+
+// ---- Menu principal ----
+const char* menuItems[] = {
+  "Configura WiFi",
+  "Configura OffSet Sensor"
+};
+const int totalMenuItems = 2;
+int menuIndex = 0;
+
+// ---- Submenu de Offset ----
+const char* offsetOpcoes[] = { "+", "-", "SALVAR" };
+const int totalOffsetOpcoes = 3;
+int offsetOpcaoIndex = 0;
+
+//float offSetDS18 = 0.0;   // valor atual do offset
+const float OFFSET_STEP = 0.05;
 
 
 /* ========================================================================== */
@@ -167,9 +195,28 @@ RTC_DATA_ATTR uint8_t rtcQtFalha = 0;
 
 bool enviaDados();  //Grava banco de dados
 
-void accessPoint();   // Habilita como AccessPoint
-void handleConfig();  // Recebe SSID e Senha
 void handleRoot();    // Exibe página inicial
+void handleConfig();  // Recebe SSID e Senha
+void accessPoint();   // Habilita como AccessPoint
+bool conectaWiFi();
+void leSensor();      //Le sensor 18B20
+void leSHT4x();       //Le sensor SHT41X
+String addrParaString(byte* sensorAddress);
+float lerVoltagemBateria();
+void carregaPreferences();
+void leBotao();
+void dormir(int opcao);
+void desligaRecursos();
+void menuConfiguracao();
+void verificaBotao();
+void cliqueCurto();
+void cliqueLongo();
+void avancaMenuPrincipal();
+void executaSelecaoMenuPrincipal();
+void avancaOpcaoOffset();
+void executaAcaoOffset();
+void desenhaTelaOffset();
+void feedbackRapido(const char* texto);
 
 /* ========================================================================== */
 
@@ -334,6 +381,11 @@ void handleConfig() {
 
 void accessPoint() {
   //DEBUG_PRINTLN("Starting Access Point...");
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.drawString(0, 5, "Acessar a Rede");
+  display.drawString(0, 20, "ESP8266AP");
+  display.drawString(0, 35, "Endereço 192.168.4.1");
   display.drawString(0, 50, "Modo AP...");
   display.display();
 
@@ -418,6 +470,9 @@ void leSensor() {
   byte data[9];
   sensorsDS.begin();
   
+  DEBUG_PRINT("OffSet: ");
+  DEBUG_PRINTLN(rtcOffSetDS18);
+
   ds18Present = sensorsDS.getDeviceCount();
   DEBUG_PRINTLN(ds18Present);
   if(!sensorsDS.getAddress(rtcaddr, 0)){
@@ -438,83 +493,15 @@ void leSensor() {
   sensorsDS.requestTemperatures();            // Send the command to get temperatures
   delay(1000);
   temp = sensorsDS.getTempC(rtcaddr);
+  DEBUG_PRINT(" Temperatura lida = ");
+  DEBUG_PRINTLN(temp);
+  temp = temp + rtcOffSetDS18;
 
-  /*
-  if (rtcaddr[0] != 0x28) {
-
-    if (!ds.search(rtcaddr)) {
-      ds.reset_search();
-      DEBUG_PRINTLN("Fim daleitura");
-      delay(100);
-      //return;
-    }
-    DEBUG_PRINTLN("Grava endereco");
-  }
-  
-
-  if (OneWire::crc8(rtcaddr, 7) != rtcaddr[7]) {
-    DEBUG_PRINTLN("CRC is not valid!");
-    return;
-  }
-
-  */
-  //rtcSensorAddr = addrParaString(rtcaddr);
-  //strlcpy(rtcSensorAddr, addrParaString(rtcaddr).c_str(), sizeof(rtcSensorAddr));
-  //display.clear();
-  //display.drawString(0, 10, enderecoFormatado);
-  //display.display();
   strlcpy(rtcSensorAddr, addrParaString(rtcaddr).c_str(), sizeof(rtcSensorAddr));
   DEBUG_PRINT("rtcSensorAddr: ");
   DEBUG_PRINTLN(rtcSensorAddr);
-  /*
-  ds.reset();
-  ds.select(rtcaddr);
-  ds.write(0x44, 1);  // start conversion, with parasite power on at the end
-
-  delay(1000);  // maybe 750ms is enough, maybe not
-  // we might do a ds.depower() here, but the reset will take care of it.
-
-  present = ds.reset();
-  ds.select(rtcaddr);
-  ds.write(0xBE);  // Read Scratchpad
-
   
-  DEBUG_PRINT("  Data = ");
-  DEBUG_PRINT2(present, HEX);
-  DEBUG_PRINT(" ");
-
-  for (i = 0; i < 9; i++) {  // we need 9 bytes
-    data[i] = ds.read();
-    DEBUG_PRINT2(data[i], HEX);
-    DEBUG_PRINT(" ");
-  }
-
-  DEBUG_PRINT(" CRC=");
-  DEBUG_PRINT2(OneWire::crc8(data, 8), HEX);
-  DEBUG_PRINTLN();
-  
-  // Convert the data to actual temperature
-  // because the result is a 16 bit signed integer, it should
-  // be stored to an "int16_t" type, which is always 16 bits
-  // even when compiled on a 32 bit processor.
-  int16_t raw = (data[1] << 8) | data[0];
-  if (type_s) {
-    raw = raw << 3;  // 9 bit resolution default
-    if (data[7] == 0x10) {
-      // "count remain" gives full 12 bit resolution
-      raw = (raw & 0xFFF0) + 12 - data[6];
-    }
-  } else {
-    byte cfg = (data[4] & 0x60);
-    // at lower res, the low bits are undefined, so let's zero them
-    if (cfg == 0x00) raw = raw & ~7;       // 9 bit resolution, 93.75 ms
-    else if (cfg == 0x20) raw = raw & ~3;  // 10 bit res, 187.5 ms
-    else if (cfg == 0x40) raw = raw & ~1;  // 11 bit res, 375 ms
-    //// default is 12 bit resolution, 750 ms conversion time
-  }
-  */
-  //temp = (float)raw / 16.0;
-  DEBUG_PRINT("  Temperature = ");
+  DEBUG_PRINT("  Temperature Ajustada = ");
   DEBUG_PRINT(temp);
   DEBUG_PRINTLN(" Celsius, ");
   display.setFont(ArialMT_Plain_16);
@@ -600,6 +587,10 @@ float lerVoltagemBateria() {
   float voltagem = (float)raw * 490 / 100000 * fatorVoltagem;  // Ajuste o 4.02 conforme seu multímetro
   DEBUG_PRINTLN(raw);
 
+  //Se a voltaghem está baixa dormir por 1h
+  if (voltagem <= 3.3)
+    dormir(3);
+
   // 4. Desliga o Vext para economizar energia no Deep Sleep
   digitalWrite(VEXT_CONTROL, LOW);
 
@@ -608,6 +599,9 @@ float lerVoltagemBateria() {
 
 void carregaPreferences() {
   //Salva o conteúde de Preferences em RTC_DATA
+  digitalWrite(led, HIGH);       //liga led interno
+
+
   DEBUG_PRINTLN("Carrega Preferences");
 
   preferences.begin("config", true);  // true = somente leitura
@@ -616,12 +610,13 @@ void carregaPreferences() {
   String ip = preferences.getString("ip", "");
   String gw = preferences.getString("gateway", "");
   String sn = preferences.getString("subnet", "");
+  rtcOffSetDS18 = preferences.getFloat("offsetDS", 0.0);
   //String dns        = preferences.getString("dns", "");
   //String sensorAddr = preferences.getString("sensorAddr", "");
   preferences.getBytes("addr", rtcaddr, 8);
   preferences.end();
 
-  
+
   // DEBUG_PRINT("SSID: ");
   // for (int i = 0; i < ssid.length(); i++) {
   //   Serial.print(ssid[i], HEX);
@@ -664,44 +659,329 @@ void carregaPreferences() {
 
     rtcSensorValido = true;
   }
+
+  leBotao();
+
 }  //End CarregaPreferences
 
-void dormir(bool falha) {
+void leBotao(){
+    int qtLeitura = 50;
+    bool btPressionado = false;
+    display.drawString(0, 0, "< Aperte para configurar");
+    display.drawString(10, 20, "ou aguarde: ");
+    //DEBUG_PRINTLN(display.getStringWidth("o"));
+    display.display();
+
+    for (int i = qtLeitura; i >= 0; i--){
+      if (digitalRead(ButtonPin) == LOW){
+        btPressionado = true;
+        i = 0;
+      }
+      if (!(i % 10)){
+        int temp_i = i / 10;
+        display.setColor(BLACK);
+        display.fillRect(70, 20, 40, 16);  // x, y, largura, altura - ajuste ao tamanho do seu texto
+        display.setColor(WHITE);
+        display.drawString(70,20, String(temp_i));
+        DEBUG_PRINTLN(temp_i);
+        display.display();
+      }
+      delay(100);
+    }
+
+    display.clear();
+    if (btPressionado){
+      DEBUG_PRINTLN("Botão Pressionado");
+      menuConfiguracao();
+      // fica preso nos menus até que uma das ações sejam efetivadas
+      // salva WiFi | Salva offset | aperta reset
+      while (1)
+        verificaBotao();
+    }
+}
+
+// =======================================================
+// Desenha o menu Configuração Principal
+// =======================================================
+void menuConfiguracao(){
+  // display.setColor(BLACK);
+  // display.fillRect(0, 0, 128, 64);
+  // display.setColor(WHITE);
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+
+  for (int i = 0; i < totalMenuItems; i++) {
+    int y = 10 + (i * 16);
+
+    if (i == menuIndex) {
+      display.fillRect(0, y - 2, 128, 14);
+      display.setColor(BLACK);
+      display.drawString(4, y, menuItems[i]);
+      display.setColor(WHITE);
+    } else {
+      display.drawString(4, y, menuItems[i]);
+    }
+  }
+
+  display.display();
+}
+
+// =======================================================
+// Verifica o estado do botão (não bloqueante)
+// =======================================================
+void verificaBotao() {
+  // ---- Controle do botão (genérico, reutilizado nas duas telas) ----
+  static bool buttonPressed = false;
+  static bool longPressTriggered = false;
+  static unsigned long pressStartTime = 0;
+  static unsigned long lastDebounceTime = 0;
+  static int lastButtonState = HIGH;
+
+  int currentState = digitalRead(ButtonPin);
+
+  if (currentState != lastButtonState) {
+    lastDebounceTime = millis();
+  }
+
+  if ((millis() - lastDebounceTime) > DEBOUNCE_TIME) {
+
+    if (currentState == LOW && !buttonPressed) {
+      buttonPressed = true;
+      longPressTriggered = false;
+      pressStartTime = millis();
+    }
+
+    if (currentState == LOW && buttonPressed && !longPressTriggered) {
+      if (millis() - pressStartTime >= LONG_PRESS_TIME) {
+        longPressTriggered = true;
+        cliqueLongo();
+      }
+    }
+
+    if (currentState == HIGH && buttonPressed) {
+      buttonPressed = false;
+      if (!longPressTriggered) {
+        cliqueCurto();
+      }
+    }
+  }
+
+  lastButtonState = currentState;
+}
+
+// =======================================================
+// Roteador de clique curto, conforme a tela atual
+// =======================================================
+void cliqueCurto() {
+  if (telaAtual == MENU_PRINCIPAL) {
+    avancaMenuPrincipal();
+  } else if (telaAtual == TELA_OFFSET) {
+    avancaOpcaoOffset();
+  }
+}
+
+// =======================================================
+// Roteador de clique longo, conforme a tela atual
+// =======================================================
+void cliqueLongo() {
+  if (telaAtual == MENU_PRINCIPAL) {
+    executaSelecaoMenuPrincipal();
+  } else if (telaAtual == TELA_OFFSET) {
+    executaAcaoOffset();
+  }
+}
+
+// =======================================================
+// ---------------- MENU PRINCIPAL ----------------
+// =======================================================
+void avancaMenuPrincipal() {
+  menuIndex = (menuIndex + 1) % totalMenuItems;
+  DEBUG_PRINTLN(menuIndex);
+  menuConfiguracao();
+}
+
+void executaSelecaoMenuPrincipal() {
+  //feedbackRapido("Entrando...");
+
+  switch (menuIndex) {
+    case 0:
+      //configuraWiFi();
+      feedbackRapido("Entrando no modo AP");
+      accessPoint();
+      while (1) server.handleClient();
+      break;
+    case 1:
+      // entra no submenu de offset
+      telaAtual = TELA_OFFSET;
+      offsetOpcaoIndex = 0; // sempre inicia em "+"
+      desenhaTelaOffset();
+      return; // não volta pro menu principal, fica na tela de offset
+  }
+
+  menuConfiguracao();
+}
+
+// =======================================================
+// ---------------- SUBMENU OFFSET ----------------
+// =======================================================
+
+// Clique curto: alterna entre +, -, SALVAR
+void avancaOpcaoOffset() {
+  offsetOpcaoIndex = (offsetOpcaoIndex + 1) % totalOffsetOpcoes;
+  DEBUG_PRINTLN(offsetOpcaoIndex);
+  desenhaTelaOffset();
+}
+
+// Clique longo: executa a ação da opção selecionada
+void executaAcaoOffset() {
+  switch (offsetOpcaoIndex) {
+    case 0: // "+"
+      rtcOffSetDS18 += OFFSET_STEP;
+      desenhaTelaOffset();
+      break;
+
+    case 1: // "-"
+      rtcOffSetDS18 -= OFFSET_STEP;
+      desenhaTelaOffset();
+      break;
+
+    case 2: // "SALVAR"
+      preferences.begin("config", false);
+      preferences.putFloat("offsetDS", rtcOffSetDS18);
+      preferences.end();
+      DEBUG_PRINT("Offset salvo: ");
+      DEBUG_PRINT2(rtcOffSetDS18, 2);
+
+      feedbackRapido("Offset salvo!");
+      dormir(2);
+
+      // volta para o menu principal
+      //telaAtual = MENU_PRINCIPAL;
+      //desenhaMenu();
+      break;
+  }
+}
+
+// =======================================================
+// Desenha a tela do submenu de offset
+// =======================================================
+void desenhaTelaOffset() {
+  // display.setColor(BLACK);
+  // display.fillRect(0, 0, 128, 64);
+  // display.setColor(WHITE);
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+
+  // Título
+  display.drawString(0, 0, "Offset Sensor");
+
+  // Valor atual do offset
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(0, 14, String(rtcOffSetDS18, 2));
+  display.setFont(ArialMT_Plain_10);
+
+  // Opções +, -, SALVAR (destaca a selecionada)
+  int xPos = 0;
+  for (int i = 0; i < totalOffsetOpcoes; i++) {
+    int largura = display.getStringWidth(offsetOpcoes[i]) + 10;
+
+    if (i == offsetOpcaoIndex) {
+      display.fillRect(xPos, 45, largura, 16);
+      display.setColor(BLACK);
+      display.drawString(xPos + 4, 47, offsetOpcoes[i]);
+      display.setColor(WHITE);
+    } else {
+      display.drawString(xPos + 4, 47, offsetOpcoes[i]);
+    }
+
+    xPos += largura + 4;
+  }
+
+  display.display();
+}
+
+// =======================================================
+// Feedback visual rápido (usado em algumas transições)
+// =======================================================
+void feedbackRapido(const char* texto) {
+  // display.setColor(BLACK);
+  // display.fillRect(0, 0, 128, 64);
+  // display.setColor(WHITE);
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.drawString(64, 25, texto);
+  display.display();
+  delay(500);
+}
+
+void dormir(int opcao) {
   uint32_t tempo = millis()+800;
+  uint32_t tempSleep = (tempo / 1000) < TIME_TO_SLEEP ? TIME_TO_SLEEP - (tempo / 1000) : TIME_TO_SLEEP;
   
   display.drawString(0, 0, String(tempo));
   DEBUG_PRINTLN("entrou em dormir, tempo: ");
   DEBUG_PRINTLN(tempo);
 
-  if (falha) {
-    rtcQtFalha++;
-    if (rtcQtFalha > 3){
+  switch (opcao) {
+    case 0:
+      //Sem falhas - tudo normal
+      DEBUG_PRINTLN("Falha case 0");
+      display.display();
+      delay(200);
       rtcQtFalha = 0;
-      display.drawString(40, 0, "---RESETANDO---");
+      desligaRecursos();
+      esp_sleep_enable_timer_wakeup(tempSleep * uS_TO_S_FACTOR);
+      esp_deep_sleep_start();
+      break;
+    
+    case 1:
+      //Alguma falaha ocorreu
+      DEBUG_PRINTLN("Falha case 1");
+      rtcQtFalha++;
+      if (rtcQtFalha > 10){
+        rtcQtFalha = 0;
+        display.drawString(40, 0, "---RESETANDO---");
+        display.display();
+        delay(1500);
+        DEBUG_PRINTLN("falhou - Resetando");
+        
+        desligaRecursos();  
+        ESP.restart();
+      }
+      display.drawString(20, 0, "---FALHOU---");
       display.display();
       delay(800);
-      DEBUG_PRINTLN("falhou - Resetando");
       
-      desligaRecursos();  
-      ESP.restart();
-    }
-    display.drawString(20, 0, "---FALHOU---");
-    display.display();
-    delay(800);
+      desligaRecursos();
+      esp_sleep_enable_timer_wakeup(10 * uS_TO_S_FACTOR);
+      esp_deep_sleep_start();
+      break;
     
-    desligaRecursos();
-    esp_sleep_enable_timer_wakeup(10 * uS_TO_S_FACTOR);
-    esp_deep_sleep_start();
-  } 
-  
-  display.display();
-  delay(800);
-  rtcQtFalha = 0;
-  
-  desligaRecursos();
-  uint32_t tempSleep = (tempo / 1000) < TIME_TO_SLEEP ? TIME_TO_SLEEP - (tempo / 1000) : TIME_TO_SLEEP;
-  esp_sleep_enable_timer_wakeup(tempSleep * uS_TO_S_FACTOR);
-  esp_deep_sleep_start();
+    case 2:
+      //Menu de ajuste offSet
+      DEBUG_PRINTLN("Falha case 2");
+      desligaRecursos();
+      esp_sleep_enable_timer_wakeup(5 * uS_TO_S_FACTOR);
+      esp_deep_sleep_start();
+      break;
+      
+    case 3:
+      //bateria baixa
+      DEBUG_PRINTLN("Falha case 3");
+      feedbackRapido("Bateria baixa - Verifique");
+      feedbackRapido("Nova tentativa em 1 hora");
+      desligaRecursos();
+      esp_sleep_enable_timer_wakeup(TIME_TO_BATTERY * uS_TO_S_FACTOR);
+      esp_deep_sleep_start();
+      break;
+    
+    default:
+      DEBUG_PRINTLN("O Menu dormir entrou em default");
+      delay(2000);
+      esp_sleep_enable_timer_wakeup(10 * uS_TO_S_FACTOR);
+      esp_deep_sleep_start();
+      break;
+  }
 }
 
 void desligaRecursos(){
@@ -722,6 +1002,7 @@ void setup() {
   //pino para ligar o display e o Radio e periféricos
   pinMode(Vext, OUTPUT);
   pinMode(led, OUTPUT);
+  pinMode(ButtonPin, INPUT_PULLUP);  // pull-up interno
 
   digitalWrite(Vext, LOW);
   delay(10);
@@ -750,15 +1031,7 @@ void setup() {
   DEBUG_PRINTLN(esp_sleep_get_wakeup_cause());
   DEBUG_PRINTLN(rtcSensorAddr);
 
-  // DEBUG_PRINT("SSID: ");
-  // DEBUG_PRINTLN(rtcSsid);
-  // 2. Leitura do sensor
-  digitalWrite(led, HIGH);
-  leSensor();               //le sensor DS18B20
-  leSHT4x();                //le Sensor SHT41
-  digitalWrite(led, LOW);
-
-  // 3. Le bateria
+  //2. Leitura da Bateria
   bateria = lerVoltagemBateria();
   char sBat[30];
   sprintf(sBat, "Voltagem: %.2f V", bateria);
@@ -766,7 +1039,12 @@ void setup() {
   display.display();
   DEBUG_PRINTLN(bateria);
 
-  //  4. Conecta WiFi
+  //3. Leitura dos sensores
+  leSensor();               //le sensor DS18B20
+  leSHT4x();                //le Sensor SHT41
+  display.display();
+
+  // 4. Conecta WiFi
   //se falhar a conexão restarta
 
   // bool concta = conectaWiFi();
@@ -774,7 +1052,7 @@ void setup() {
   // dormir(false);
   
   if (!conectaWiFi()) 
-    dormir(true);
+    dormir(1);
   // se falhar ao enviar dados restarta
   bool envio = enviaDados();
   DEBUG_PRINT("Envio Return: ");
