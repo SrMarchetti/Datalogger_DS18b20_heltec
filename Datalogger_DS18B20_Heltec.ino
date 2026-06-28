@@ -33,7 +33,8 @@
  *      Definições específicas de cada dispositivo
  *============================================================================*/
 //const int dispositivo = 600;     //acrescenta ao sensor do dispositivo
-#define DispositivoName "Teste"  //HostName e OTA
+#define DispositivoName "TMI02"  //HostName e OTA
+const String currentVersion = "1.0.6";
 
 /* ========================================================================== */
 
@@ -81,6 +82,7 @@
 #define uS_TO_S_FACTOR   1000000ULL
 #define TIME_TO_SLEEP    900  //900 = 15min
 #define TIME_TO_BATTERY  3600 //1 hora
+#define TIME_LE_SENSOR   10000 //10 segundos
 //TwoWire I2C_0 = TwoWire(0);   // Define barramento Display I2C(0)
 TwoWire I2C_1 = TwoWire(1);   // Define barramento sensor  I2C(1)
 
@@ -123,7 +125,6 @@ Adafruit_SHT4x sht4 = Adafruit_SHT4x();     // GPIO41 SDA - GPIO42 SCL
 //#define EEPROM_SIZE 64
 //#define EEPROM_SSID_OFFSET 0
 //#define EEPROM_PASSWORD_OFFSET 32
-const String currentVersion = "1.0.5";
 const char* servidorOTA = "http://10.0.0.11/firmware/v2.bin";
 
 //para conexão com banco de dados
@@ -736,6 +737,7 @@ void verificaBotao() {
   static unsigned long pressStartTime = 0;
   static unsigned long lastDebounceTime = 0;
   static int lastButtonState = HIGH;
+  static unsigned long AtualizaTela = 0;
 
   int currentState = digitalRead(ButtonPin);
 
@@ -767,6 +769,14 @@ void verificaBotao() {
   }
 
   lastButtonState = currentState;
+  
+  //verifica se atualiza a tela
+  if (telaAtual == TELA_OFFSET){
+    if (((millis() - AtualizaTela) > TIME_LE_SENSOR) || AtualizaTela == 0){
+      AtualizaTela = millis();
+      desenhaTelaOffset();
+    }
+  }
 }
 
 // =======================================================
@@ -866,9 +876,14 @@ void executaAcaoOffset() {
 // Desenha a tela do submenu de offset
 // =======================================================
 void desenhaTelaOffset() {
-  // display.setColor(BLACK);
-  // display.fillRect(0, 0, 128, 64);
-  // display.setColor(WHITE);
+  static unsigned long leSensorTime = 0;
+  //static float tOffSet = rtcOffSetDS18;
+
+  if (((millis() - leSensorTime) > TIME_LE_SENSOR) || leSensorTime == 0) {
+    leSensorTime = millis();
+    leSensor();
+  }
+  
   display.clear();
   display.setTextAlignment(TEXT_ALIGN_LEFT);
 
@@ -877,7 +892,8 @@ void desenhaTelaOffset() {
 
   // Valor atual do offset
   display.setFont(ArialMT_Plain_16);
-  display.drawString(0, 14, String(rtcOffSetDS18, 2));
+  display.drawString(0, 14,  String(rtcOffSetDS18, 2));
+  display.drawString(64, 14, String(temp,    2)+"ºC");
   display.setFont(ArialMT_Plain_10);
 
   // Opções +, -, SALVAR (destaca a selecionada)
