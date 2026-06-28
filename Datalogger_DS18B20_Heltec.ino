@@ -123,7 +123,7 @@ const String currentVersion = "1.0.4";
 const char* servidorOTA = "http://10.0.0.11/firmware/v2.bin";
 
 //para conexão com banco de dados
-const char http_site[] = "http://10.0.0.11/api/v2/gravasensor";  //"http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/php/gravabanco.php";
+const char http_site[] = "http://192.168.15.19:3000/v2/gravasensor";  //"http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/php/gravabanco.php";
 //const int http_port = 3001;
 
 const float fatorVoltagem = 1.003367;
