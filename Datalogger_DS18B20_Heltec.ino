@@ -128,7 +128,7 @@ Adafruit_SHT4x sht4 = Adafruit_SHT4x();     // GPIO41 SDA - GPIO42 SCL
 const char* servidorOTA = "http://10.0.0.11/firmware/v2.bin";
 
 //para conexão com banco de dados
-const char http_site[] = "http://192.168.15.19:3000/v2/gravasensor";  //"http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/php/gravabanco.php";
+const char http_site[] = "http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/v2/gravasensor";  //"http://10.0.0.11/php/gravabanco.php";  //"http://192.168.15.19:3000/v2/gravasensor"
 //const int http_port = 3001;
 
 //const float fatorVoltagem = 1.003367;
