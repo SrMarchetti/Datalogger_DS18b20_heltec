@@ -6,7 +6,8 @@
 
     Autor: Sergio R Marchetti
     Data: 14/03/2026
-    revisão 0
+    18/09/26
+    revisão 1.0.6
     
 
     Placa Heltec Wifi Lora 32 V3.2
